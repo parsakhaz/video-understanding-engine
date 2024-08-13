@@ -357,7 +357,8 @@ def main():
             inputs=gr.File(label="Upload Video"),
             outputs="text",
             title="Video Summarizer",
-            description="Upload a video to get a summary."
+            description="Upload a video to get a summary.",
+            allow_flagging="never"
         )
         iface.launch()
     elif args.video:
