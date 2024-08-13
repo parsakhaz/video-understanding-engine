@@ -17,6 +17,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import time
 from frame_selection import process_video
+import gradio as gr
 
 # Function to transcribe audio from a video file using Whisper model
 def transcribe_video(video_path):
@@ -301,59 +302,112 @@ def summarize_with_hosted_llm(transcript, descriptions):
     # Extract and return the generated summary
     return completion.choices[0].message.content.strip()
 
-def main():
-    parser = argparse.ArgumentParser(description="Process a video file.")
-    parser.add_argument('video', type=str, help='Path to the video file')
-    parser.add_argument('--debug', action='store_true', help='Display frames with descriptions')
-    parser.add_argument('--save', action='store_true', help='Save output to a JSON file')
-    parser.add_argument('--local', action='store_true', help='Use local Llama model for summarization')
-    parser.add_argument('--frame-selection', action='store_true', help='Use CLIP-based key frame selection algorithm')
-    args = parser.parse_args()
-
-    print(f"Processing video: {args.video}")
+def process_video_web(video_file):
+    # This function will be called by Gradio when a video is uploaded
+    video_path = video_file.name
+    print(f"Processing video: {video_path}")
 
     start_time = time.time()
 
     # Get frame count
-    frame_count = get_frame_count(args.video)
+    frame_count = get_frame_count(video_path)
     if frame_count == 0:
-        return
+        return "Error: Could not process video."
 
-    # Transcribe the video to get the audio captions
-    transcript = transcribe_video(args.video)
-    print(f"Transcript: {transcript}")
+    # Transcribe the video
+    transcript = transcribe_video(video_path)
+    print(f"Transcript generated.")
 
-    # Select frames based on the chosen method
-    if args.frame_selection:
-        print("Using frame selection algorithm")
-        frame_numbers = process_video(args.video)
-    else:
-        print("Sampling every 50 frames")
-        # Calculate frame numbers to describe every 50 frames
-        frame_numbers = list(range(0, frame_count, 50))
+    # Select frames (using default method)
+    print("Sampling every 50 frames")
+    frame_numbers = list(range(0, frame_count, 50))
 
     # Describe frames
-    descriptions = describe_frames(args.video, frame_numbers)
+    descriptions = describe_frames(video_path, frame_numbers)
+    print("Frame descriptions generated.")
 
+    # Generate summary (using hosted LLM by default)
     print("Generating video summary...")
-    if args.local:
-        print("Using local Llama model for summarization...")
-        summary = summarize_with_llama(transcript, descriptions)
-    else:
-        print("Using hosted LLM for summarization...")
-        summary = summarize_with_hosted_llm(transcript, descriptions)
+    summary = summarize_with_hosted_llm(transcript, descriptions)
     print("Summary generation complete.")
-    print(f"Video Summary:\n{summary}")
 
     total_run_time = time.time() - start_time
     print(f"Time taken: {total_run_time:.2f} seconds")
 
-    if args.save:
-        print("Saving output to JSON file...")
-        save_output(args.video, frame_count, transcript, descriptions, summary, total_run_time)
+    # Save output to JSON file
+    print("Saving output to JSON file...")
+    save_output(video_path, frame_count, transcript, descriptions, summary, total_run_time)
 
-    if args.debug:
-        display_described_frames(args.video, descriptions)
+    return f"Video Summary:\n{summary}\n\nTime taken: {total_run_time:.2f} seconds"
+
+def main():
+    parser = argparse.ArgumentParser(description="Process a video file.")
+    parser.add_argument('video', type=str, nargs='?', help='Path to the video file')
+    parser.add_argument('--debug', action='store_true', help='Display frames with descriptions')
+    parser.add_argument('--save', action='store_true', help='Save output to a JSON file')
+    parser.add_argument('--local', action='store_true', help='Use local Llama model for summarization')
+    parser.add_argument('--frame-selection', action='store_true', help='Use CLIP-based key frame selection algorithm')
+    parser.add_argument('--web', action='store_true', help='Start Gradio web interface')
+    args = parser.parse_args()
+
+    if args.web:
+        # Create Gradio interface
+        iface = gr.Interface(
+            fn=process_video_web,
+            inputs=gr.File(label="Upload Video"),
+            outputs="text",
+            title="Video Summarizer",
+            description="Upload a video to get a summary."
+        )
+        iface.launch()
+    elif args.video:
+        # Existing command-line processing logic
+        print(f"Processing video: {args.video}")
+
+        start_time = time.time()
+
+        # Get frame count
+        frame_count = get_frame_count(args.video)
+        if frame_count == 0:
+            return
+
+        # Transcribe the video to get the audio captions
+        transcript = transcribe_video(args.video)
+        print(f"Transcript: {transcript}")
+
+        # Select frames based on the chosen method
+        if args.frame_selection:
+            print("Using frame selection algorithm")
+            frame_numbers = process_video(args.video)
+        else:
+            print("Sampling every 50 frames")
+            # Calculate frame numbers to describe every 50 frames
+            frame_numbers = list(range(0, frame_count, 50))
+
+        # Describe frames
+        descriptions = describe_frames(args.video, frame_numbers)
+
+        print("Generating video summary...")
+        if args.local:
+            print("Using local Llama model for summarization...")
+            summary = summarize_with_llama(transcript, descriptions)
+        else:
+            print("Using hosted LLM for summarization...")
+            summary = summarize_with_hosted_llm(transcript, descriptions)
+        print("Summary generation complete.")
+        print(f"Video Summary:\n{summary}")
+
+        total_run_time = time.time() - start_time
+        print(f"Time taken: {total_run_time:.2f} seconds")
+
+        if args.save:
+            print("Saving output to JSON file...")
+            save_output(args.video, frame_count, transcript, descriptions, summary, total_run_time)
+
+        if args.debug:
+            display_described_frames(args.video, descriptions)
+    else:
+        print("Please provide a video file path or use the --web flag to start the web interface.")
 
 if __name__ == "__main__":
     main()

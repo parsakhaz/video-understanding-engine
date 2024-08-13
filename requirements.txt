@@ -13,4 +13,5 @@ scikit-learn
 openai-whisper
 openai
 python-dotenv
+gradio
 # flash-attn

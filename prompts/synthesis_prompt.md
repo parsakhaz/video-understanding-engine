@@ -7,7 +7,7 @@ Please follow these steps to complete the task:
 2. Create a concise summary of the video content in about 3-6 sentences. Focus on the main events, characters, and overall narrative of the video. Include this summary within <summary> tags.
 
 3. Generate 4-10 relevant captions for key moments in the video. Each caption should:
-   - Correspond to a specific timestamp or range of timestamps
+   - Correspond to a specific timestamp or range of timestamps. Make sure it is reasonable given the video length.
    - Capture an important event, action, or visual element
    - Be concise and descriptive (about 20-50 words)
    Include these captions within <captions> tags, with each individual caption enclosed in <caption> tags.
