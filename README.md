@@ -1,61 +1,333 @@
 # Video Summarizer
 
-A powerful video summarization tool using Moondream, CLIP, Llama 3.1, and Whisper.
+A powerful video summarization tool that combines multiple AI models to provide comprehensive video understanding through audio transcription, intelligent frame selection, visual description, and content summarization.
 
-## Features
+## Quick Start
+```bash
+# Install and run with default settings
+pip install -r requirements.txt
+python main.py video.mp4
 
-- Transcribe video audio using Whisper
-- Extract key frames using CLIP-based selection algorithm (optional)
-- Describe frames using Moondream vision-language model
-- Summarize video content using Llama 3.1 or gpt4o-mini
+# Run with all features enabled
+python main.py video.mp4 --frame-selection --save --debug
+```
+
+## Architecture Overview
+
+```mermaid
+graph TD
+    A[Input Video] --> B[Frame Selection]
+    A --> C[Audio Processing]
+    
+    subgraph "Frame Selection Pipeline"
+    B --> D[CLIP Embeddings]
+    D --> E[Similarity Analysis]
+    E --> F[Key Frame Detection]
+    F --> G[Frame Clustering]
+    end
+    
+    subgraph "Audio Pipeline"
+    C --> H[Whisper Model]
+    H --> I[Timestamped Transcript]
+    end
+    
+    F --> J[Selected Frames]
+    G --> J
+    J --> K[Moondream VLM]
+    K --> L[Frame Descriptions]
+    
+    I --> M[Content Synthesis]
+    L --> M
+    
+    subgraph "Summarization Pipeline"
+    M --> N{Model Selection}
+    N -->|Local| O[Llama 3.1]
+    N -->|Hosted| P[gpt4o-mini]
+    O --> Q[Final Summary]
+    P --> Q
+    end
+```
+
+## Directory Structure
+```
+video-summarizer/
+├── main.py              # Main entry point
+├── frame_selection.py   # CLIP-based frame selection
+├── requirements.txt     # Dependencies
+├── .env                # Environment variables
+├── prompts/            # Model prompts
+│   ├── moondream_prompt.md
+│   └── synthesis_prompt.md
+├── logs/               # Output logs
+├── frame_analysis_plots/ # Frame analysis visualizations
+└── embedding_cache/    # Cached CLIP embeddings
+```
+
+## Process Flow
+
+1. **Video Input Processing**
+   - Input: Video file
+   - Output: Frame data and audio stream
+   - Supported formats: MP4, AVI, MOV, MKV
+   - Maximum recommended length: 30 minutes
+
+2. **Frame Selection** (when using `--frame-selection`)
+   - Model: CLIP (ViT-SO400M-14-SigLIP-384)
+   - Process:
+     1. Extract frames from video
+     2. Generate CLIP embeddings for each frame (bfloat16 precision)
+     3. Calculate frame similarities
+     4. Detect novel frames using sliding window analysis
+     5. Cluster similar frames using KMeans
+     6. Select representative frames from each cluster
+   - Output: List of key frame numbers
+   - Cache: Embeddings stored in `embedding_cache/<video_name>.npy`
+   - Default mode: Samples every 50 frames when not using CLIP selection
+
+3. **Audio Transcription**
+   - Model: Whisper (large)
+   - Process:
+     1. Extract audio from video
+     2. Generate transcript with timestamps
+   - Output: JSON with `{start, end, text}` segments
+   - Supported languages: 100+ languages (auto-detected)
+   - Accuracy: ~95% for clear English speech
+
+4. **Frame Description**
+   - Model: Moondream2 (vikhyatk/moondream2)
+   - Input: Selected frames (either from CLIP selection or regular sampling)
+   - Process:
+     1. Batch process frames (8 at a time)
+     2. Generate detailed descriptions
+   - Output: Frame descriptions with timestamps
+   - Batch size: Configurable (default: 8)
+   - Memory usage: ~4GB GPU RAM
+
+5. **Content Synthesis**
+   - Models: 
+     - Local: Meta-Llama-3.1-8B-Instruct
+     - Hosted: gpt4o-mini
+   - Input: 
+     - Timestamped transcript
+     - Frame descriptions
+   - Output: Comprehensive video summary
+   - Token limit: 4096 tokens
+   - Temperature: 0.7
 
 ## Installation
 
 1. Clone the repository:
-   ```
+   ```bash
    git clone https://github.com/yourusername/video-summarizer.git
    cd video-summarizer
    ```
 
-2. Create a virtual environment (optional but recommended):
-   ```
+2. Create a virtual environment (recommended):
+   ```bash
    python -m venv venv
-   source venv/bin/activate
+   source venv/bin/activate  # Linux/Mac
+   .\venv\Scripts\activate   # Windows
    ```
 
-3. Install the required packages:
-   ```
+3. Install dependencies:
+   ```bash
    pip install -r requirements.txt
    ```
 
-4. Set up environment variables if needed:
-   Create a `.env` file in the project root and add your OpenAI API key:
+4. Environment Setup:
+   Create a `.env` file:
    ```
    OPENAI_API_KEY=your_api_key_here
    ```
 
 ## Usage
 
-Run the main script with the following command:
+### Command Line Interface
 
-```
-python main.py <path_to_video_file> [options]
+Basic usage:
+```bash
+python main.py <video_path>
 ```
 
-Options:
-- `--debug`: Display moondream labeledframes with descriptions
-- `--save`: Save output data to a JSON file
-- `--local`: Use local Llama model for summarization instead of gpt4o-mini (not recommended due to quality issues)
-- `--frame-selection`: Use CLIP-based key frame selection algorithm (requires CLIPing all frames and is mainly useful for reducing frames labeled in mundane videos)
+Advanced options:
+```bash
+python main.py <video_path> [--debug] [--save] [--local] [--frame-selection] [--web]
+```
 
-Example:
+Options explained:
+- `--debug`: Display processed frames with descriptions
+- `--save`: Save all outputs to JSON (includes transcript, descriptions, summary)
+- `--local`: Use local Llama model instead of hosted LLM
+- `--frame-selection`: Use CLIP-based intelligent frame selection
+- `--web`: Launch web interface
+
+Example commands:
+```bash
+# Process video with all features
+python main.py video.mp4 --frame-selection --save --debug
+
+# Quick processing with hosted LLM
+python main.py video.mp4 --save
+
+# Launch web interface
+python main.py --web
 ```
-python main.py path/to/your/video.mp4 --save --debug
+
+### Web Interface
+```bash
+python main.py --web
 ```
+
+The web interface provides:
+- Drag-and-drop video upload
+- Progress tracking
+- Interactive results viewing
+- Download options for JSON output
+
+## Model Prompts
+
+### Moondream Frame Description Prompt
+Location: `prompts/moondream_prompt.md`
+```
+Describe this frame in detail, focusing on key visual elements, actions, and any text visible in the frame. Be specific but concise.
+```
+
+### Content Synthesis Prompt
+Location: `prompts/synthesis_prompt.md`
+```
+You are a video content analyzer. Your task is to create a comprehensive summary of a video based on its transcript and frame descriptions.
+
+The input will be provided in two sections:
+<transcript>
+Timestamped transcript of the video's audio
+</transcript>
+
+<frame_descriptions>
+Timestamped descriptions of key frames from the video
+</frame_descriptions>
+
+Create a detailed summary that:
+1. Captures the main topics and themes
+2. Highlights key visual and auditory information
+3. Maintains chronological flow
+4. Integrates both visual and audio elements coherently
+
+Be concise but comprehensive. Focus on the most important information.
+```
+
+## Output Format
+
+When using `--save`, outputs are saved in `logs/` with the following structure:
+```json
+{
+    "video_path": "path/to/video",
+    "frame_count": 1000,
+    "transcript": [
+        {
+            "start": 0.0,
+            "end": 2.5,
+            "text": "Transcribed text..."
+        }
+    ],
+    "moondream_prompt": "Prompt used for frame description",
+    "frame_descriptions": [
+        {
+            "frame_number": 100,
+            "timestamp": 4.0,
+            "description": "Frame description..."
+        }
+    ],
+    "summary": "Final video summary...",
+    "total_run_time": 120.5
+}
+```
+
+## Frame Analysis Visualization
+
+When using `--frame-selection`, analysis plots are saved in `frame_analysis_plots/` showing:
+- Sequential frame similarities
+- Sliding window differences
+- Identified key frames
+- Cluster representative frames
+
+Plot interpretation:
+- Blue line: Frame-to-frame similarity
+- Orange line: Sliding window differences
+- Red dots: Novel frames
+- Green dots: Cluster representatives
 
 ## Requirements
 
 - Python 3.10+
-- CUDA-compatible GPU (for optimal performance)
+- CUDA-compatible GPU (recommended)
+- Minimum 16GB RAM
+- Storage:
+  - ~10GB for models
+  - Additional space for video processing
+- FFmpeg (for video processing)
+- Internet connection (for hosted LLM)
 
-See `requirements.txt` for a full list of Python package dependencies.
+### Key Dependencies
+- `torch`: GPU acceleration
+- `whisper`: Audio transcription
+- `transformers`: LLM models
+- `open_clip`: Frame analysis
+- `gradio`: Web interface
+- `opencv-python`: Video processing
+- `numpy`: Numerical operations
+- `matplotlib`: Visualization
+- See `requirements.txt` for complete list
+
+## Performance Considerations
+
+1. **Frame Selection**
+   - CLIP embeddings are cached in `embedding_cache/`
+   - First run on a video will be slower
+   - Subsequent runs use cached embeddings
+   - Cache format: NumPy arrays (.npy)
+   - Cache size: ~2MB per minute of video
+
+2. **Model Loading**
+   - Models are loaded/unloaded to manage memory
+   - GPU memory requirements:
+     - Whisper: ~5GB
+     - Moondream: ~4GB
+     - Llama (if local): ~8GB
+     - CLIP: ~2GB
+   - Total peak memory: ~12GB (with local LLM)
+
+3. **Processing Time**
+   - Varies with video length and options
+   - Example times (5-minute video):
+     - Basic: ~5-10 minutes
+     - With frame selection: ~15-20 minutes
+     - With local LLM: ~25-30 minutes
+   - Scaling: Approximately linear with video length
+
+## Troubleshooting
+
+1. **Out of Memory**
+   - Reduce batch size in `describe_frames()`
+   - Use hosted LLM instead of local
+   - Process shorter video segments
+   - Clear GPU memory: `torch.cuda.empty_cache()`
+   - Monitor with `nvidia-smi`
+
+2. **Slow Processing**
+   - Check GPU utilization
+   - Verify CUDA installation
+   - Consider reducing frame sampling rate
+   - Use CPU fallback if needed
+   - Profile with `torch.profiler`
+
+3. **Cache Issues**
+   - Clear `embedding_cache/` if problems occur
+   - Verify disk space availability
+   - Check file permissions
+   - Validate cache integrity
+
+4. **Common Errors**
+   - `CUDA out of memory`: Reduce batch size
+   - `FFmpeg not found`: Install FFmpeg
+   - `API rate limit`: Check API key and quotas
+   - `File not found`: Check video path and permissions
