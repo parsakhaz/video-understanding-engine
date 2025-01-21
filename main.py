@@ -351,6 +351,80 @@ def parse_synthesis_output(output: str) -> tuple:
         print("Raw output:", output)
         return None, None
 
+def create_summary_clip(summary: str, width: int, height: int, fps: int) -> str:
+    """Create a video clip with centered summary text."""
+    # Calculate duration based on reading speed (400 words/min) + 0% buffer
+    word_count = len(summary.split())
+    base_duration = (word_count / 400) * 60  # Convert to seconds
+    duration = base_duration * 1  # Add 0% buffer
+    total_frames = int(duration * fps)
+    
+    # Create output path
+    os.makedirs('outputs', exist_ok=True)
+    temp_summary_path = os.path.join('outputs', f'temp_summary_{int(time.time())}.mp4')
+    
+    # Initialize video writer
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(temp_summary_path, fourcc, fps, (width, height))
+    
+    # Create black frame
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+    
+    # Prepare text
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = min(height * 0.04 / 20, 1.0)  # Slightly larger font for summary
+    margin = 40
+    max_width = int(width * 0.8)  # Use 80% of frame width
+    
+    # Split text into lines
+    words = summary.split()
+    lines = []
+    current_line = []
+    
+    for word in words:
+        test_line = ' '.join(current_line + [word])
+        (text_width, _), _ = cv2.getTextSize(test_line, font, font_scale, 1)
+        
+        if text_width <= max_width:
+            current_line.append(word)
+        else:
+            if current_line:
+                lines.append(' '.join(current_line))
+            current_line = [word]
+    
+    if current_line:
+        lines.append(' '.join(current_line))
+    
+    # Calculate text block height
+    line_height = max(25, int(height * 0.04))
+    total_height = len(lines) * line_height
+    start_y = (height - total_height) // 2  # Center vertically
+    
+    # Write frames
+    for _ in range(total_frames):
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        y = start_y
+        
+        for line in lines:
+            # Get text size for centering
+            (text_width, _), _ = cv2.getTextSize(line, font, font_scale, 1)
+            x = (width - text_width) // 2  # Center horizontally
+            
+            cv2.putText(frame,
+                       line,
+                       (x, y),
+                       font,
+                       font_scale,
+                       (255, 255, 255),
+                       1,
+                       cv2.LINE_AA)
+            y += line_height
+        
+        out.write(frame)
+    
+    out.release()
+    return temp_summary_path, duration
+
 def create_captioned_video(video_path: str, descriptions: list, summary: str, transcript: list, synthesis_captions: list = None, use_synthesis_captions: bool = False, output_path: str = None) -> str:
     """Create a video with persistent captions from keyframe descriptions and transcriptions."""
     print("\nCreating captioned video...")
@@ -420,6 +494,12 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
     current_desc_idx = 0
     current_transcript_idx = 0
 
+    # Load font for PIL
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", 32)  # Adjust size as needed
+    except:
+        font = ImageFont.load_default()
+
     with tqdm(total=total_frames, desc="Creating video") as pbar:
         while True:
             ret, frame = video.read()
@@ -450,156 +530,174 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             words_per_second = len(transcript_text.split()) / segment_duration if segment_duration > 0 else 0
             is_likely_hallucination = words_per_second < 0.5
 
-            # Add caption using our existing logic
-            height, width = frame.shape[:2]
+            # Convert frame to PIL Image for text rendering
+            frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(frame_pil)
+
+            # Calculate text parameters
             margin = 8
             padding = 10
-            min_line_height = 20
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            max_width = int(width * 0.9)
-            
-            # Start with timestamp and description (different format for synthesis captions)
+            font_size = int(frame_height * 0.03)
+            font = ImageFont.truetype("DejaVuSans.ttf", font_size) if font_size > 0 else ImageFont.load_default()
+            max_width = int(frame_width * 0.9)
+
+            # Start with timestamp and description
             if use_synthesis_captions:
-                full_text = description  # Synthesis captions already include context
+                full_text = description
             else:
                 full_text = f"[{timestamp:.2f}s] {description}"
-            words = full_text.split()
+
+            # Split text into lines that fit width
             top_lines = []
+            words = full_text.split()
             current_line = []
-            
-            font_scale = min(height * 0.03 / min_line_height, 0.7)
-            
-            # Split text into lines that fit the width
+
             for word in words:
                 test_line = ' '.join(current_line + [word])
-                (text_width, _), _ = cv2.getTextSize(test_line, font, font_scale, 1)
-                
+                bbox = draw.textbbox((0, 0), test_line, font=font)
+                text_width = bbox[2] - bbox[0]
+
                 if text_width <= max_width - 2 * margin:
                     current_line.append(word)
                 else:
                     if current_line:
                         top_lines.append(' '.join(current_line))
                     current_line = [word]
-            
+
             if current_line:
                 top_lines.append(' '.join(current_line))
 
             # Add transcript as subtitle if not likely hallucination
             bottom_lines = []
             if not is_likely_hallucination and transcript_text.strip():
-                # Split transcript into lines
                 subtitle_words = transcript_text.split()
                 current_line = []
-                
-                # Larger font scale for transcripts (4 sizes bigger)
-                transcript_font_scale = min(height * 0.03 / min_line_height, 0.7) + 0.4
-                
+                transcript_font_size = int(font_size * 1.4)  # 40% larger for transcripts
+                transcript_font = ImageFont.truetype("DejaVuSans.ttf", transcript_font_size) if transcript_font_size > 0 else ImageFont.load_default()
+
                 for word in subtitle_words:
                     test_line = ' '.join(current_line + [word])
-                    (text_width, _), _ = cv2.getTextSize(test_line, font, transcript_font_scale, 1)
-                    
+                    bbox = draw.textbbox((0, 0), test_line, font=transcript_font)
+                    text_width = bbox[2] - bbox[0]
+
                     if text_width <= max_width - 2 * margin:
                         current_line.append(word)
                     else:
                         if current_line:
                             bottom_lines.append(' '.join(current_line))
                         current_line = [word]
-                
+
                 if current_line:
                     bottom_lines.append(' '.join(current_line))
-            
-            # Calculate box dimensions for top overlay (frame descriptions)
-            top_line_count = len(top_lines)
-            line_height = max(min_line_height, int(height * 0.03))
-            top_box_height = top_line_count * line_height + 2 * padding
-            
-            # Create top overlay for frame descriptions
-            overlay = frame.copy()
-            cv2.rectangle(overlay, 
-                         (margin, margin),
-                         (width - margin, margin + top_box_height),
-                         (0, 0, 0),
-                         -1)
-            
-            # Add frame description text
-            y = margin + padding + line_height
-            for line in top_lines:
-                cv2.putText(overlay,
-                           line,
-                           (margin + padding, y),
-                           font,
-                           font_scale,
-                           (255, 255, 255),
-                           1,
-                           cv2.LINE_AA)
-                y += line_height
-            
-            # If we have speech transcription, add bottom overlay
+
+            # Draw top overlay and text
+            if top_lines:
+                line_height = font_size + 4
+                overlay = Image.new('RGBA', frame_pil.size, (0, 0, 0, 0))
+                draw_overlay = ImageDraw.Draw(overlay)
+
+                y = margin + padding
+                for line in top_lines:
+                    # Calculate text width for this line
+                    bbox = draw.textbbox((0, 0), line, font=font)
+                    text_width = bbox[2] - bbox[0]
+                    
+                    # Draw background box just for this line
+                    bg_padding = 10
+                    x = margin + bg_padding
+                    
+                    # Draw black background with 3px padding
+                    text_bbox = draw.textbbox((x, y), line, font=font)
+                    bg_bbox = [
+                        text_bbox[0] - 3,  # x0 with padding
+                        text_bbox[1] - 3,  # y0 with padding
+                        text_bbox[2] + 3,  # x1 with padding
+                        text_bbox[3] + 3   # y1 with padding
+                    ]
+                    draw_overlay.rectangle(bg_bbox, fill=(0, 0, 0))
+                    
+                    # Draw white text
+                    draw.text((x, y), line, font=font, fill=(255, 255, 255))
+                    y += line_height
+
+            # Draw bottom overlay and text
             if bottom_lines:
-                bottom_line_count = len(bottom_lines)
-                bottom_box_height = bottom_line_count * line_height + 2 * padding
-                bottom_margin = int(height * 0.15)  # Position overlay 15% from bottom
-                
-                # Add speech transcription text (centered with tight background)
-                y = height - bottom_box_height - bottom_margin + padding + line_height
+                line_height = transcript_font_size + 4
+                bottom_margin = int(frame_height * 0.15)
+                y = frame_height - bottom_margin
+
                 for line in bottom_lines:
-                    # Calculate text width for centering and background
-                    (text_width, text_height), _ = cv2.getTextSize(line, font, transcript_font_scale, 1)
-                    x = (width - text_width) // 2  # Center the text
+                    # Center align text
+                    bbox = draw.textbbox((0, 0), line, font=transcript_font)
+                    text_width = bbox[2] - bbox[0]
+                    x = (frame_width - text_width) // 2
+
+                    # Draw black background with 3px padding
+                    text_bbox = draw.textbbox((x, y - transcript_font_size), line, font=transcript_font)
+                    bg_bbox = [
+                        text_bbox[0] - 3,  # x0 with padding
+                        text_bbox[1] - 3,  # y0 with padding
+                        text_bbox[2] + 3,  # x1 with padding
+                        text_bbox[3] + 3   # y1 with padding
+                    ]
+                    draw_overlay.rectangle(bg_bbox, fill=(0, 0, 0))
                     
-                    # Create tight background just for this line
-                    bg_padding = 10  # Padding around text
-                    bg_x1 = x - bg_padding
-                    bg_x2 = x + text_width + bg_padding
-                    bg_y1 = y - text_height - bg_padding
-                    bg_y2 = y + bg_padding
-                    
-                    # Draw background rectangle
-                    cv2.rectangle(overlay,
-                                (bg_x1, bg_y1),
-                                (bg_x2, bg_y2),
-                                (0, 0, 0),
-                                -1)
-                    
-                    # Draw text
-                    cv2.putText(overlay,
-                               line,
-                               (x, y),
-                               font,
-                               transcript_font_scale,
-                               (255, 255, 255),
-                               1,
-                               cv2.LINE_AA)
-                    y += line_height * 1.5  # Increase spacing between lines
-            
-            # Blend overlay with original frame
-            alpha = 0.7
-            frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
-            
-            out.write(frame)
+                    # Draw white text
+                    draw.text((x, y - transcript_font_size), line, font=transcript_font, fill=(255, 255, 255))
+                    y += line_height * 1.5
+
+            # Convert back to OpenCV format and write
+            frame_cv = cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGB2BGR)
+            out.write(frame_cv)
             frame_count += 1
             pbar.update(1)
 
     video.release()
     out.release()
 
-    # Copy audio from original video
+    # Create summary intro clip
+    print("\nCreating summary intro...")
+    summary_path, summary_duration = create_summary_clip(summary, frame_width, frame_height, fps)
+    
+    # Create a file list for concatenation
+    concat_file = os.path.join('outputs', 'concat_list.txt')
+    with open(concat_file, 'w') as f:
+        f.write(f"file '{os.path.abspath(summary_path)}'\n")
+        f.write(f"file '{os.path.abspath(temp_output)}'\n")
+    
+    # Concatenate videos
+    print("\nCombining summary and main video...")
+    concat_output = os.path.join('outputs', f'concat_{os.path.basename(temp_output)}')
+    concat_cmd = [
+        'ffmpeg', '-y',
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', concat_file,
+        '-c', 'copy',
+        concat_output
+    ]
+    subprocess.run(concat_cmd, check=True)
+    
+    # Now merge with audio, adjusting for summary duration
     print("\nMerging with audio...")
     cmd = [
         'ffmpeg', '-y',
-        '-i', temp_output,       # Input captioned video
-        '-i', video_path,        # Input original video (for audio)
-        '-c:v', 'copy',          # Copy video stream as is
-        '-c:a', 'aac',           # Use AAC for audio
-        '-map', '0:v',           # Use video from first input
-        '-map', '1:a',           # Use audio from second input
+        '-i', concat_output,
+        '-i', video_path,
+        '-filter_complex', f'[1:a]adelay={int(summary_duration*1000)}|{int(summary_duration*1000)}[delayed_audio]',
+        '-c:v', 'copy',
+        '-map', '0:v',
+        '-map', '[delayed_audio]',
         final_output
     ]
     
     subprocess.run(cmd, check=True)
     
-    # Clean up temporary file
+    # Clean up temporary files
     os.remove(temp_output)
+    os.remove(summary_path)
+    os.remove(concat_file)
+    os.remove(concat_output)
     
     print(f"\nCaptioned video saved to: {final_output}")
     return final_output
@@ -626,8 +724,8 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
         print("Using frame selection algorithm")
         frame_numbers = process_video(video_path)
     else:
-        print("Sampling every 50 frames")
-        frame_numbers = list(range(0, frame_count, 50))
+    print("Sampling every 50 frames")
+    frame_numbers = list(range(0, frame_count, 50))
 
     # Describe frames
     descriptions = describe_frames(video_path, frame_numbers)

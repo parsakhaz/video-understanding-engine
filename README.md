@@ -26,12 +26,14 @@ python main.py video.mp4 --frame-selection --save
 - Accessible video output with captions
 
 ### Video Output Features
+- 5-second summary intro with calculated reading duration
 - Intelligent frame descriptions with timestamps
 - Whisper-based speech transcription with hallucination detection
 - Adaptive text wrapping and positioning
 - Accessibility-focused caption design
 - Choice between detailed or synthesized captions
 - Original audio preservation with proper synchronization
+- Black text backgrounds for enhanced readability
 
 ### Caption Types
 1. **Full Frame Descriptions**
@@ -39,28 +41,59 @@ python main.py video.mp4 --frame-selection --save
    - Technical visual details
    - More frequent updates
    - Timestamps included
+   - 3px black background for readability
    
 2. **Synthesis Captions** (Optional)
    - Context-aware, narrative-focused captions
    - Dynamic quantity based on video length
-   - Automatic deduplication of close captions (< 2.5s apart)
+   - Automatic deduplication of close captions (< 1.2s apart)
    - Better for storytelling and overview
    - Clean text without timestamps
+   - 3px black background for readability
 
 ### Accessibility Features
-- High contrast caption backgrounds (70% opacity)
+- High contrast caption backgrounds
+  - 3px black background for all text
+  - Tight background boxes that match text width
 - Responsive font sizing
   - Frame descriptions: Standard size
-  - Speech transcriptions: 4 sizes larger
+  - Speech transcriptions: 40% larger
 - Automatic text wrapping
 - Minimum readable text size
 - Caption persistence between transitions
 - Clear timestamp indicators
 - Separated visual and speech captions
   - Frame descriptions at top
-  - Speech transcriptions centered near bottom
-  - Tight background boxes for speech transcriptions
-- Original audio track preservation
+  - Speech transcriptions centered at 15% from bottom
+  - Tight background boxes for all text
+- Original audio track preservation with proper delay for intro
+
+### Video Generation
+1. **Summary Intro**
+   - 5-second black background intro
+   - Centered summary text
+   - Reading speed calculation (400 words/min)
+   - Dynamic duration based on text length
+
+2. **Main Video Content**
+   - Frame descriptions with timestamps (if not using synthesis)
+   - Synthesis captions (when selected)
+   - Speech transcriptions with hallucination detection
+   - Proper text positioning and styling
+   - Black backgrounds for all text elements
+
+3. **Audio Handling**
+   - Original audio preservation
+   - Proper audio delay for intro section
+   - FFmpeg concat demuxer for clean transitions
+   - Synchronized audio throughout video
+
+4. **Technical Details**
+   - FFmpeg for video assembly
+   - PIL for text rendering
+   - Proper character encoding support
+   - Efficient text background rendering
+   - Clean temporary file management
 
 ## Architecture Overview
 
