@@ -48,7 +48,6 @@ def transcribe_video(video_path):
             "end": 0,
             "text": ""
         }]
-
     # Suppress the FutureWarning from torch.load
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=FutureWarning)
@@ -270,7 +269,7 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
 
 def get_synthesis_prompt(num_keyframes: int) -> str:
     """Generate a dynamic synthesis prompt based on number of keyframes."""
-    num_captions = max(4, num_keyframes // 3)  # At least 4 captions, or 1/3 of keyframes
+    num_captions = max(4, num_keyframes // 2.4)  # At least 4 captions, or 1/2.4 of keyframes
     
     return f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions. You MUST follow the exact format specified below.
 
@@ -624,8 +623,21 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                 subtitle_words = transcript_text.split()
                 current_line = []
                 
-                # Larger font scale for transcripts (4 sizes bigger)
-                transcript_font_scale = min(height * 0.03 / min_line_height, 0.7) + 0.4
+                # Adjust font and padding based on resolution tiers
+                if height >= 1440:  # 2K and above
+                    base_increase = 0.6
+                    bg_padding = 20
+                    bottom_margin = int(height * 0.2)
+                elif height >= 720:  # HD
+                    base_increase = 0.4
+                    bg_padding = 10
+                    bottom_margin = int(height * 0.15)
+                else:  # SD
+                    base_increase = 0.1
+                    bg_padding = 5
+                    bottom_margin = int(height * 0.1)
+                
+                transcript_font_scale = min(height * 0.03 / min_line_height, 0.7) + base_increase
                 
                 for word in subtitle_words:
                     test_line = ' '.join(current_line + [word])
@@ -643,14 +655,24 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             
             # Calculate box dimensions for top overlay (frame descriptions)
             top_line_count = len(top_lines)
-            line_height = max(min_line_height, int(height * 0.03))
+            # Adjust line height based on resolution
+            if height >= 1440:  # 2K and above
+                line_height = max(min_line_height, int(height * 0.04))
+                padding = 15
+            elif height >= 720:  # HD
+                line_height = max(min_line_height, int(height * 0.03))
+                padding = 10
+            else:  # SD
+                line_height = max(min_line_height, int(height * 0.02))
+                padding = 8
+                
             top_box_height = top_line_count * line_height + 2 * padding
             
             # Create top overlay for frame descriptions
             overlay = frame.copy()
             cv2.rectangle(overlay, 
-                         (margin, margin),
-                         (width - margin, margin + top_box_height),
+                         (int(margin), int(margin)),
+                         (int(width - margin), int(margin + top_box_height)),
                          (0, 0, 0),
                          -1)
             
@@ -659,7 +681,7 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             for line in top_lines:
                 cv2.putText(overlay,
                            line,
-                           (margin + padding, y),
+                           (int(margin + padding), int(y)),
                            font,
                            font_scale,
                            (255, 255, 255),
@@ -671,7 +693,6 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             if bottom_lines:
                 bottom_line_count = len(bottom_lines)
                 bottom_box_height = bottom_line_count * line_height + 2 * padding
-                bottom_margin = int(height * 0.15)  # Position overlay 15% from bottom
                 
                 # Add speech transcription text (centered with tight background)
                 y = height - bottom_box_height - bottom_margin + padding + line_height
@@ -681,11 +702,10 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                     x = (width - text_width) // 2  # Center the text
                     
                     # Create tight background just for this line
-                    bg_padding = 10  # Padding around text
-                    bg_x1 = x - bg_padding
-                    bg_x2 = x + text_width + bg_padding
-                    bg_y1 = y - text_height - bg_padding
-                    bg_y2 = y + bg_padding
+                    bg_x1 = int(x - bg_padding)
+                    bg_x2 = int(x + text_width + bg_padding)
+                    bg_y1 = int(y - text_height - bg_padding)
+                    bg_y2 = int(y + bg_padding)
                     
                     # Draw background rectangle
                     cv2.rectangle(overlay,
@@ -697,7 +717,7 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                     # Draw text
                     cv2.putText(overlay,
                                line,
-                               (x, y),
+                               (int(x), int(y)),
                                font,
                                transcript_font_scale,
                                (255, 255, 255),
@@ -884,8 +904,8 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
             # Create overlay for text background
             overlay = frame.copy()
             cv2.rectangle(overlay, 
-                         (margin, margin),
-                         (width - margin, margin + box_height),
+                         (int(margin), int(margin)),
+                         (int(width - margin), int(margin + box_height)),
                          (0, 0, 0),
                          -1)
             
@@ -894,7 +914,7 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
             for line in lines:
                 cv2.putText(overlay,
                            line,
-                           (margin + padding, y),
+                           (int(margin + padding), int(y)),
                            font,
                            font_scale,
                            (255, 255, 255),
