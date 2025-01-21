@@ -40,7 +40,7 @@ python main.py video.mp4 --frame-selection --save
    - More frequent updates
    - Timestamps included
    
-2. **Synthesis Captions** (Optional)
+2. **Synthesis Captions** (Highly recommended)
    - Context-aware, narrative-focused captions
    - Dynamic quantity based on video length
    - Automatic deduplication of close captions (< 2.5s apart)
@@ -101,7 +101,7 @@ graph TD
     subgraph "Summarization Pipeline"
     O --> P{Model Selection}
     P -->|Local| Q[Llama 3.1]
-    P -->|Hosted| R[gpt4o-mini]
+    P -->|Hosted| R[gpt4o]
     Q --> S[XML Validation]
     R --> S
     S --> T[Summary + Captions]
@@ -159,7 +159,7 @@ sequenceDiagram
         Main->>AudioProc: extract_audio()
         activate AudioProc
         AudioProc->>AudioProc: detect_silence()
-        Note over AudioProc: threshold=-20dB<br/>min_length=1000ms
+        Note over AudioProc: threshold=-65dB<br/>min_length=1000ms
         AudioProc->>AudioProc: trim_silence()
         AudioProc->>AudioProc: calculate_offset()
         AudioProc-->>Main: trimmed_audio, offset
@@ -265,7 +265,7 @@ video-summarizer/
 
 5. **Content Synthesis**
    - Models: 
-     - Local: Meta-Llama-3.1-8B-Instruct
+     - Local (to be implemented): Meta-Llama-3.1-8B-Instruct
      - Hosted: gpt-4o
    - Input: 
      - Timestamped transcript
@@ -386,20 +386,22 @@ python main.py <video_path> [--save] [--local] [--frame-selection] [--web]
 
 Options explained:
 - `--save`: Save all outputs to JSON (includes transcript, descriptions, summary)
-- `--local`: Use local Llama model instead of hosted LLM
+- `--local`: (under development, not working yet) Use local Llama model instead of hosted LLM
 - `--frame-selection`: Use CLIP-based intelligent frame selection
-- `--web`: Launch web interface
+- `--web`: Launch web interface (highly recommended)
 
 Example commands:
 ```bash
+# Launch web interface (highly recommended)
+python main.py --web
+
 # Process video with all features
 python main.py video.mp4 --frame-selection --save
 
-# Quick processing with hosted LLM
+# Quick processing with hosted LLM (not working yet)
 python main.py video.mp4 --save
 
-# Launch web interface
-python main.py --web
+
 ```
 
 ## Model Prompts
@@ -526,7 +528,7 @@ Plot interpretation:
 
 1. **Out of Memory**
    - Reduce batch size in `describe_frames()`
-   - Use hosted LLM instead of local
+   - Use hosted LLM instead of local (wip)
    - Process shorter video segments
    - Clear GPU memory: `torch.cuda.empty_cache()`
    - Monitor with `nvidia-smi`
@@ -579,7 +581,7 @@ The tool generates an MP4 video with the following structure:
 #### Audio Processing Improvements
 - **Silence Trimming**
   - Automatic detection and removal of leading silence
-  - Configurable silence threshold (-20 dB)
+  - Configurable silence threshold (-65 dB)
   - Minimum silence length: 1000ms
   - Timestamp correction to maintain video sync
   - Uses pydub for robust audio analysis

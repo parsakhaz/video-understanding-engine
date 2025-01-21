@@ -23,7 +23,7 @@ import re
 from pydub import AudioSegment
 from pydub.silence import detect_nonsilent
 # Function to trim silence from audio
-def trim_silence(audio_path, min_silence_len=1000, silence_thresh=-20, offset=0):
+def trim_silence(audio_path, min_silence_len=1000, silence_thresh=-65, offset=0):
     """
     Trims silence from the beginning and end of an audio file.
     
@@ -473,13 +473,23 @@ def summarize_with_hosted_llm(transcript, descriptions):
             
             user_content = f"<transcript>\n{timestamped_transcript}\n</transcript>\n\n<frame_descriptions>\n{frame_descriptions}\n</frame_descriptions>"
             
-            # Get completion for this chunk
-            completion = get_llm_completion(synthesis_prompt, user_content)
-            chunk_summary, chunk_captions = parse_synthesis_output(completion)
-            
-            if chunk_summary and chunk_captions:
-                all_summaries.append(chunk_summary)
-                all_captions.extend(chunk_captions)
+            # Get completion for this chunk with retries
+            max_retries = 3
+            for attempt in range(max_retries):
+                completion = get_llm_completion(synthesis_prompt, user_content)
+                chunk_summary, chunk_captions = parse_synthesis_output(completion)
+                
+                if chunk_summary and chunk_captions:
+                    all_summaries.append(chunk_summary)
+                    all_captions.extend(chunk_captions)
+                    break
+                else:
+                    if attempt < max_retries - 1:
+                        print(f"\nRetrying chunk {i} synthesis (attempt {attempt + 2}/{max_retries})...")
+                        time.sleep(2 * (attempt + 1))  # Exponential backoff
+                    else:
+                        print(f"\nFailed to generate synthesis for chunk {i} after {max_retries} attempts.")
+                        return None, None
 
         # Make a final pass to synthesize all summaries into one coherent summary
         print("\nSynthesizing final summary...")
@@ -498,7 +508,17 @@ def summarize_with_hosted_llm(transcript, descriptions):
         chunk_summaries_content = "\n\n".join([f"Chunk {i+1}:\n{summary}" for i, summary in enumerate(all_summaries)])
         final_summary_content = f"<chunk_summaries>\n{chunk_summaries_content}\n</chunk_summaries>"
         
-        final_summary = get_llm_completion(final_summary_prompt, final_summary_content)
+        # Get final summary with retries
+        for attempt in range(max_retries):
+            final_summary = get_llm_completion(final_summary_prompt, final_summary_content)
+            if final_summary:
+                break
+            elif attempt < max_retries - 1:
+                print(f"\nRetrying final summary generation (attempt {attempt + 2}/{max_retries})...")
+                time.sleep(2 * (attempt + 1))
+            else:
+                print("\nFailed to generate final summary after multiple attempts.")
+                return None, None
         
         # Create final synthesis format with the new summary
         final_output = f"<summary>\n{final_summary}\n</summary>\n\n<captions>\n"
@@ -508,12 +528,27 @@ def summarize_with_hosted_llm(transcript, descriptions):
         
         return final_output
     else:
-        # Original logic for short videos
+        # Original logic for short videos with retries
         synthesis_prompt = get_synthesis_prompt(len(descriptions), is_long_video=False)
         timestamped_transcript = "\n".join([f"[{segment['start']:.2f}s-{segment['end']:.2f}s] {segment['text']}" for segment in transcript])
         frame_descriptions = "\n".join([f"[{timestamp:.2f}s] Frame {frame}: {desc}" for frame, timestamp, desc in descriptions])
         user_content = f"<transcript>\n{timestamped_transcript}\n</transcript>\n\n<frame_descriptions>\n{frame_descriptions}\n</frame_descriptions>"
-        return get_llm_completion(synthesis_prompt, user_content)
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            completion = get_llm_completion(synthesis_prompt, user_content)
+            summary, captions = parse_synthesis_output(completion)
+            
+            if summary and captions:
+                return completion
+            else:
+                if attempt < max_retries - 1:
+                    print(f"\nRetrying synthesis generation (attempt {attempt + 2}/{max_retries})...")
+                    time.sleep(2 * (attempt + 1))  # Exponential backoff
+                else:
+                    print(f"\nFailed to generate synthesis after {max_retries} attempts.")
+                    print("Falling back to frame descriptions.")
+                    return None
 
 def get_llm_completion(prompt: str, content: str) -> str:
     """Helper function to get LLM completion with error handling."""
@@ -533,7 +568,6 @@ def get_llm_completion(prompt: str, content: str) -> str:
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": content}
                 ],
-                max_tokens=1024,
                 temperature=0.3
             )
             return completion.choices[0].message.content.strip()
@@ -579,10 +613,10 @@ def parse_synthesis_output(output: str) -> tuple:
 
 def create_summary_clip(summary: str, width: int, height: int, fps: int) -> str:
     """Create a video clip with centered summary text."""
-    # Calculate duration based on reading speed (400 words/min) - 20% buffer
+    # Calculate duration based on reading speed (400 words/min) * 0% buffer
     word_count = len(summary.split())
     base_duration = (word_count / 400) * 60  # Convert to seconds
-    duration = base_duration * 0.8  # Add -30% buffer
+    duration = base_duration * 1
     total_frames = int(duration * fps)
     
     # Create output path
