@@ -303,6 +303,187 @@ def summarize_with_hosted_llm(transcript, descriptions):
     # Extract and return the generated summary
     return completion.choices[0].message.content.strip()
 
+def create_captioned_video(video_path: str, descriptions: list, summary: str, output_path: str = None) -> str:
+    """Create a video with persistent captions from keyframe descriptions."""
+    print("\nCreating captioned video...")
+    
+    # Create output directory if needed
+    if output_path is None:
+        os.makedirs('outputs', exist_ok=True)
+        base_name = os.path.splitext(os.path.basename(video_path))[0]
+        output_path = os.path.join('outputs', f'captioned_{base_name}.mp4')
+
+    video = cv2.VideoCapture(video_path)
+    fps = video.get(cv2.CAP_PROP_FPS)
+    frame_width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    # Sort descriptions by timestamp
+    frame_info = [(frame_num, timestamp, desc) for frame_num, timestamp, desc in descriptions]
+    frame_info.sort(key=lambda x: x[1])  # Sort by timestamp
+
+    # Initialize video writer
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(
+        output_path,
+        fourcc,
+        fps,
+        (frame_width, frame_height)
+    )
+
+    # Create 5 second intro with summary
+    intro_frames = int(5 * fps)  # 5 seconds worth of frames
+    print("\nCreating intro sequence...")
+    
+    # Create a black frame
+    black_frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
+    
+    # Split summary into lines for better display
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = min(frame_height * 0.03 / 20, 0.7)  # Scale with frame height
+    max_width = int(frame_width * 0.8)  # Use 80% of frame width
+    
+    # Split summary into lines
+    words = summary.split()
+    lines = []
+    current_line = []
+    
+    for word in words:
+        test_line = ' '.join(current_line + [word])
+        (text_width, _), _ = cv2.getTextSize(test_line, font, font_scale, 1)
+        
+        if text_width <= max_width:
+            current_line.append(word)
+        else:
+            if current_line:
+                lines.append(' '.join(current_line))
+            current_line = [word]
+    
+    if current_line:
+        lines.append(' '.join(current_line))
+    
+    # Calculate total height needed for text
+    line_height = max(20, int(frame_height * 0.03))
+    total_height = len(lines) * line_height
+    start_y = (frame_height - total_height) // 2  # Center vertically
+    
+    # Write intro frames
+    for _ in range(intro_frames):
+        frame = black_frame.copy()
+        y = start_y
+        
+        for line in lines:
+            # Get text size for centering
+            (text_width, _), _ = cv2.getTextSize(line, font, font_scale, 1)
+            x = (frame_width - text_width) // 2  # Center horizontally
+            
+            cv2.putText(frame,
+                       line,
+                       (x, y),
+                       font,
+                       font_scale,
+                       (255, 255, 255),
+                       1,
+                       cv2.LINE_AA)
+            y += line_height
+        
+        out.write(frame)
+
+    # Process the main video
+    frame_count = 0
+    current_desc_idx = 0
+
+    with tqdm(total=total_frames, desc="Creating main video") as pbar:
+        while True:
+            ret, frame = video.read()
+            if not ret:
+                break
+
+            current_time = frame_count / fps
+
+            # Find appropriate description for current timestamp
+            while (current_desc_idx < len(frame_info) - 1 and 
+                   current_time >= frame_info[current_desc_idx + 1][1]):
+                current_desc_idx += 1
+
+            # Get current description
+            _, timestamp, description = frame_info[current_desc_idx]
+
+            # Add caption using our existing logic
+            height, width = frame.shape[:2]
+            
+            # Calculate text parameters
+            margin = 8
+            padding = 10
+            min_line_height = 20
+            
+            # Split description into lines
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            max_width = int(width * 0.9)
+            words = description.split()
+            lines = []
+            current_line = []
+            
+            # Calculate font scale based on frame height
+            font_scale = min(height * 0.03 / min_line_height, 0.7)
+            
+            for word in words:
+                test_line = ' '.join(current_line + [word])
+                (text_width, _), _ = cv2.getTextSize(test_line, font, font_scale, 1)
+                
+                if text_width <= max_width - 2 * margin:
+                    current_line.append(word)
+                else:
+                    if current_line:
+                        lines.append(' '.join(current_line))
+                    current_line = [word]
+            
+            if current_line:
+                lines.append(' '.join(current_line))
+            
+            # Add timestamp line
+            lines.insert(0, f"[{timestamp:.2f}s] {description}")
+            
+            # Calculate box dimensions
+            line_count = len(lines)
+            line_height = max(min_line_height, int(height * 0.03))
+            box_height = line_count * line_height + 2 * padding
+            
+            # Create overlay
+            overlay = frame.copy()
+            cv2.rectangle(overlay, 
+                         (margin, margin),
+                         (width - margin, margin + box_height),
+                         (0, 0, 0),
+                         -1)
+            
+            # Add text
+            y = margin + padding + line_height
+            for line in lines:
+                cv2.putText(overlay,
+                           line,
+                           (margin + padding, y),
+                           font,
+                           font_scale,
+                           (255, 255, 255),
+                           1,
+                           cv2.LINE_AA)
+                y += line_height
+            
+            # Blend overlay with original frame
+            alpha = 0.7
+            frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+            
+            out.write(frame)
+            frame_count += 1
+            pbar.update(1)
+
+    video.release()
+    out.release()
+    print(f"\nCaptioned video saved to: {output_path}")
+    return output_path
+
 def process_video_web(video_file, use_frame_selection=False):
     # This function will be called by Gradio when a video is uploaded
     video_path = video_file.name
@@ -313,7 +494,7 @@ def process_video_web(video_file, use_frame_selection=False):
     # Get frame count
     frame_count = get_frame_count(video_path)
     if frame_count == 0:
-        return "Error: Could not process video.", None
+        return "Error: Could not process video.", None, None
 
     # Transcribe the video
     transcript = transcribe_video(video_path)
@@ -335,6 +516,9 @@ def process_video_web(video_file, use_frame_selection=False):
     print("Generating video summary...")
     summary = summarize_with_hosted_llm(transcript, descriptions)
     print("Summary generation complete.")
+
+    # Create captioned video with summary intro
+    output_video_path = create_captioned_video(video_path, descriptions, summary)
 
     total_run_time = time.time() - start_time
     print(f"Time taken: {total_run_time:.2f} seconds")
@@ -425,7 +609,11 @@ def process_video_web(video_file, use_frame_selection=False):
     
     video.release()
 
-    return f"Video Summary:\n{summary}\n\nTime taken: {total_run_time:.2f} seconds", gallery_images
+    return (
+        f"Video Summary:\n{summary}\n\nTime taken: {total_run_time:.2f} seconds", 
+        gallery_images,
+        output_video_path
+    )
 
 def main():
     parser = argparse.ArgumentParser(description="Process a video file.")
@@ -437,7 +625,7 @@ def main():
     args = parser.parse_args()
 
     if args.web:
-        # Create Gradio interface with gallery
+        # Create Gradio interface with gallery and video output
         iface = gr.Interface(
             fn=process_video_web,
             inputs=[
@@ -446,7 +634,8 @@ def main():
             ],
             outputs=[
                 gr.Textbox(label="Summary"),
-                gr.Gallery(label="Analyzed Frames")
+                gr.Gallery(label="Analyzed Frames"),
+                gr.Video(label="Captioned Video")
             ],
             title="Video Summarizer",
             description="Upload a video to get a summary and view analyzed frames.",
@@ -465,7 +654,7 @@ def main():
             return
             
         # Process video using the web function for consistency
-        summary, gallery_images = process_video_web(
+        summary, gallery_images, video_path = process_video_web(
             type('VideoFile', (), {'name': args.video})(),
             use_frame_selection=args.frame_selection
         )
@@ -476,6 +665,7 @@ def main():
         
         total_run_time = time.time() - start_time
         print(f"\nTotal processing time: {total_run_time:.2f} seconds")
+        print(f"\nCaptioned video saved to: {video_path}")
     else:
         print("Please provide a video file path or use the --web flag to start the web interface.")
 
