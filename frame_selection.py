@@ -38,14 +38,15 @@ def sliding_window_filter(similarities, window_size=30):
         differences.append(difference)
     return differences
 
-def find_interesting_frames(filtered_differences, frame_embeddings, min_skip=5, novelty_threshold=0.05, adaptive_threshold=True, n_clusters=20):
+def find_interesting_frames(filtered_differences, frame_embeddings, min_skip=10, novelty_threshold=0.08, adaptive_threshold=True, n_clusters=15):
     novelty_frames = []
     last_interesting = -min_skip
     window_size = 100
 
     # Calculate adaptive threshold if enabled
     if adaptive_threshold:
-        novelty_threshold = np.mean(filtered_differences) + np.std(filtered_differences)
+        # Make adaptive threshold stricter by increasing the multiplier for std
+        novelty_threshold = np.mean(filtered_differences) + 1.2 * np.std(filtered_differences)
 
     # Find novel frames
     for i, diff in enumerate(filtered_differences):

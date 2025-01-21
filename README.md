@@ -8,9 +8,52 @@ A powerful video summarization tool that combines multiple AI models to provide 
 pip install -r requirements.txt
 python main.py video.mp4
 
+# Run with web interface (recommended)
+python main.py --web
+
 # Run with all features enabled
-python main.py video.mp4 --frame-selection --save --debug
+python main.py video.mp4 --frame-selection --save
 ```
+
+## Features
+
+### Core Features
+- Intelligent frame selection using CLIP embeddings
+- Audio transcription using Whisper
+- Visual scene description using Moondream2
+- Dynamic content synthesis with GPT-4o-mini/Llama
+- Interactive web interface
+- Accessible video output with captions
+
+### Video Output Features
+- 5-second intro with comprehensive video summary
+- Intelligent frame descriptions with timestamps
+- Whisper-based speech transcription
+- Hallucination detection for transcripts
+- Adaptive text wrapping and positioning
+- Accessibility-focused caption design
+- Choice between detailed or synthesized captions
+
+### Caption Types
+1. **Full Frame Descriptions**
+   - Detailed descriptions for every key frame
+   - Technical visual details
+   - More frequent updates
+   
+2. **Synthesis Captions** (Optional)
+   - Context-aware, narrative-focused captions
+   - Dynamic quantity based on video length
+   - Fewer but more meaningful transitions
+   - Better for storytelling and overview
+
+### Accessibility Features
+- High contrast caption backgrounds (70% opacity)
+- Responsive font sizing
+- Automatic text wrapping
+- Minimum readable text size
+- Caption persistence between transitions
+- Clear timestamp indicators
+- Separated visual and speech captions
 
 ## Architecture Overview
 
@@ -110,9 +153,24 @@ video-summarizer/
    - Input: 
      - Timestamped transcript
      - Frame descriptions
-   - Output: Comprehensive video summary
+   - Output:
+     - Comprehensive video summary
+     - Dynamic number of synthesized captions (1/3 of keyframes)
    - Token limit: 4096 tokens
    - Temperature: 0.7
+
+6. **Video Generation**
+   - Format: MP4 with H.264 encoding
+   - Components:
+     - 5-second summary intro
+     - Frame descriptions (full or synthesized)
+     - Speech transcriptions
+   - Features:
+     - Adaptive text sizing
+     - Automatic line wrapping
+     - Hallucination detection for transcripts
+     - High-contrast overlays
+     - Responsive to video dimensions
 
 ## Installation
 
@@ -142,6 +200,21 @@ video-summarizer/
 
 ## Usage
 
+### Web Interface (Recommended)
+```bash
+python main.py --web
+```
+
+The web interface provides:
+- Drag-and-drop video upload
+- Progress tracking
+- Interactive results viewing
+- Download options for JSON output
+- Caption style selection:
+  - Full frame descriptions
+  - Synthesized captions
+- Frame selection toggle
+
 ### Command Line Interface
 
 Basic usage:
@@ -151,11 +224,10 @@ python main.py <video_path>
 
 Advanced options:
 ```bash
-python main.py <video_path> [--debug] [--save] [--local] [--frame-selection] [--web]
+python main.py <video_path> [--save] [--local] [--frame-selection] [--web]
 ```
 
 Options explained:
-- `--debug`: Display processed frames with descriptions
 - `--save`: Save all outputs to JSON (includes transcript, descriptions, summary)
 - `--local`: Use local Llama model instead of hosted LLM
 - `--frame-selection`: Use CLIP-based intelligent frame selection
@@ -172,17 +244,6 @@ python main.py video.mp4 --save
 # Launch web interface
 python main.py --web
 ```
-
-### Web Interface
-```bash
-python main.py --web
-```
-
-The web interface provides:
-- Drag-and-drop video upload
-- Progress tracking
-- Interactive results viewing
-- Download options for JSON output
 
 ## Model Prompts
 
@@ -331,3 +392,27 @@ Plot interpretation:
    - `FFmpeg not found`: Install FFmpeg
    - `API rate limit`: Check API key and quotas
    - `File not found`: Check video path and permissions
+
+## Video Output Format
+
+The tool generates an MP4 video with the following structure:
+
+1. **Intro Sequence (5 seconds)**
+   - Black background
+   - Centered, wrapped summary text
+   - Larger font for readability
+
+2. **Main Video Content**
+   - Original video with overlay captions
+   - Choice of caption styles:
+     - Full frame descriptions
+     - Synthesized narrative captions
+   - Whisper transcriptions (when available)
+   - Hallucination detection for transcript filtering
+
+3. **Caption Formatting**
+   - Semi-transparent black background (70% opacity)
+   - White text with anti-aliasing
+   - Automatic text wrapping
+   - Responsive font sizing
+   - Clear timestamp indicators
