@@ -913,9 +913,9 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
     video.release()
 
     return (
+        output_video_path,
         f"Video Summary:\n{summary}\n\nTime taken: {total_run_time:.2f} seconds", 
-        gallery_images,
-        output_video_path
+        gallery_images
     )
 
 def main():
@@ -933,16 +933,16 @@ def main():
             fn=process_video_web,
             inputs=[
                 gr.File(label="Upload Video"),
-                gr.Checkbox(label="Use Frame Selection", value=False),
-                gr.Checkbox(label="Use Synthesis Captions (fewer, more contextual)", value=False)
+                gr.Checkbox(label="Use Frame Selection", value=True, info="Recommended: Intelligently selects key frames"),
+                gr.Checkbox(label="Use Synthesis Captions (fewer, more contextual)", value=True, info="Recommended: Creates a more pleasant viewing experience")
             ],
             outputs=[
+                gr.Video(label="Captioned Video"),
                 gr.Textbox(label="Summary"),
-                gr.Gallery(label="Analyzed Frames"),
-                gr.Video(label="Captioned Video")
+                gr.Gallery(label="Analyzed Frames")
             ],
             title="Video Summarizer",
-            description="Upload a video to get a summary and view analyzed frames.",
+            description="Upload a video to get a summary and view analyzed frames. Both Frame Selection and Synthesis Captions are recommended for the best results.",
             allow_flagging="never"
         )
         iface.launch()
@@ -958,7 +958,7 @@ def main():
             return
 
         # Process video using the web function for consistency
-        summary, gallery_images, video_path = process_video_web(
+        output_video_path, summary, gallery_images = process_video_web(
             type('VideoFile', (), {'name': args.video})(),
             use_frame_selection=args.frame_selection,
             use_synthesis_captions=False  # Default to all captions in CLI mode
@@ -970,7 +970,7 @@ def main():
 
         total_run_time = time.time() - start_time
         print(f"\nTotal processing time: {total_run_time:.2f} seconds")
-        print(f"\nCaptioned video saved to: {video_path}")
+        print(f"\nCaptioned video saved to: {output_video_path}")
     else:
         print("Please provide a video file path or use the --web flag to start the web interface.")
 
