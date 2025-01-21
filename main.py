@@ -19,6 +19,7 @@ import time
 from frame_selection import process_video
 import gradio as gr
 import subprocess
+import re
 
 # Function to transcribe audio from a video file using Whisper model
 def transcribe_video(video_path):
@@ -239,32 +240,49 @@ def get_synthesis_prompt(num_keyframes: int) -> str:
     """Generate a dynamic synthesis prompt based on number of keyframes."""
     num_captions = max(4, num_keyframes // 3)  # At least 4 captions, or 1/3 of keyframes
     
-    return f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions. Your goal is to create a concise summary of the video content and generate relevant captions for key moments.
+    return f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions. You MUST follow the exact format specified below.
 
-Please follow these steps to complete the task:
+Output Format:
+1. A summary section wrapped in <summary></summary> tags
+2. A captions section wrapped in <captions></captions> tags
+3. Exactly {num_captions} individual captions, each wrapped in <caption></caption> tags
+4. Each caption MUST start with a timestamp in seconds in square brackets, e.g. [2.5]
 
-1. Carefully analyze the provided transcript and frame descriptions.
+Example format:
+<summary>
+The video shows a classroom scene where...
+</summary>
 
-2. Create a concise summary of the video content in about 5-8 sentences. Focus on the main events, characters, and overall narrative of the video. Include this summary within <summary> tags.
+<captions>
+<caption>[0.0] A teacher stands at the front of the classroom...</caption>
+<caption>[5.2] Students raise their hands to answer...</caption>
+...additional captions...
+</captions>
 
-3. Generate {num_captions} relevant captions for key moments in the video. Each caption should:
-   - Correspond to a specific timestamp or range of timestamps. Make sure it is reasonable given the video length.
-   - Capture an important event, action, or visual element, while inferring the context of the video and implications of the events concisely.
-   - Be concise and descriptive (about 20-50 words)
-   Include these captions within <captions> tags, with each individual caption enclosed in <caption> tags.
+Requirements for Summary:
+1. Provide a clear overview of the video's main content and purpose
+2. Include key events, characters, and settings
+3. Integrate both visual and audio information
+4. Keep it concise (3-5 sentences)
 
-4. Structure your response as follows:
-   <summary>
-   [Your 5-8 sentence summary here]
-   </summary>
+Requirements for Captions:
+1. Generate exactly {num_captions} captions
+2. Each caption MUST:
+   - Start with a timestamp in [X.X] format
+   - Be 20-50 words long
+   - Focus on key events and context
+   - Integrate both visual and audio information when relevant
+3. Timestamps should be reasonably spaced throughout the video
+4. Focus on narrative flow and context, not just describing what's visible
 
-   <captions>
-   <caption>[Timestamp] [Your caption text]</caption>
-   <caption>[Timestamp] [Your caption text]</caption>
-   [Additional captions...]
-   </captions>
+Input sections:
+<transcript>
+Timestamped transcript of the video
+</transcript>
 
-Remember to base your summary and captions on both the transcript and the frame descriptions, integrating information from both sources to provide a comprehensive understanding of the video content."""
+<frame_descriptions>
+Timestamped descriptions of key frames
+</frame_descriptions>"""
 
 def summarize_with_hosted_llm(transcript, descriptions):
     # Load environment variables from .env file
@@ -302,36 +320,50 @@ def summarize_with_hosted_llm(transcript, descriptions):
 
 def parse_synthesis_output(output: str) -> tuple:
     """Parse the synthesis output to extract summary and captions."""
-    # Extract summary
-    summary_start = output.find("<summary>") + len("<summary>")
-    summary_end = output.find("</summary>")
-    summary = output[summary_start:summary_end].strip()
-    
-    # Extract captions
-    captions_start = output.find("<captions>") + len("<captions>")
-    captions_end = output.find("</captions>")
-    captions_text = output[captions_start:captions_end].strip()
-    
-    # Parse individual captions
-    caption_list = []
-    for caption in captions_text.split("<caption>"):
-        if "</caption>" in caption:
-            caption = caption.split("</caption>")[0].strip()
-            # Extract timestamp and text
-            if "[" in caption and "]" in caption:
-                timestamp_str = caption[caption.find("[")+1:caption.find("]")]
-                try:
-                    timestamp = float(timestamp_str.replace("s", ""))
-                    text = caption[caption.find("]")+1:].strip()
-                    caption_list.append((timestamp, text))
-                except ValueError:
-                    continue
-    
-    return summary, caption_list
+    try:
+        # Extract summary (required)
+        summary_match = re.search(r'<summary>(.*?)</summary>', output, re.DOTALL)
+        if not summary_match:
+            raise ValueError("No summary found in synthesis output")
+        summary = summary_match.group(1).strip()
+        
+        # Extract captions (required)
+        captions_match = re.search(r'<captions>(.*?)</captions>', output, re.DOTALL)
+        if not captions_match:
+            raise ValueError("No captions found in synthesis output")
+        
+        captions_text = captions_match.group(1).strip()
+        caption_matches = re.finditer(r'<caption>\s*\[(\d+\.?\d*)\](.*?)</caption>', captions_text, re.DOTALL)
+        
+        caption_list = []
+        for match in caption_matches:
+            timestamp = float(match.group(1))
+            text = match.group(2).strip()
+            if text:  # Only add if we have actual text
+                caption_list.append((timestamp, text))
+        
+        if not caption_list:
+            raise ValueError("No valid captions found in synthesis output")
+        
+        return summary, caption_list
+    except (ValueError, AttributeError) as e:
+        print(f"\nError parsing synthesis output: {str(e)}")
+        print("Raw output:", output)
+        return None, None
 
 def create_captioned_video(video_path: str, descriptions: list, summary: str, transcript: list, synthesis_captions: list = None, use_synthesis_captions: bool = False, output_path: str = None) -> str:
     """Create a video with persistent captions from keyframe descriptions and transcriptions."""
     print("\nCreating captioned video...")
+    
+    # Validate synthesis captions if requested
+    if use_synthesis_captions:
+        if not synthesis_captions:
+            print("\nWarning: Synthesis captions were requested but none were generated.")
+            print("This might indicate an issue with the synthesis process.")
+            print("Falling back to frame descriptions.")
+            use_synthesis_captions = False
+        else:
+            print(f"\nUsing {len(synthesis_captions)} synthesis captions for video output...")
     
     # Create output directory if needed
     if output_path is None:
@@ -351,6 +383,7 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
 
     # Choose which captions to use
     if use_synthesis_captions and synthesis_captions:
+        print("\nUsing synthesis captions for video output...")
         # Convert synthesis captions to frame info format
         frame_info = []
         for timestamp, text in synthesis_captions:
@@ -358,6 +391,7 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             frame_number = int(timestamp * fps)
             frame_info.append((frame_number, timestamp, text))
     else:
+        print("\nUsing frame descriptions for video output...")
         # Use all frame descriptions
         frame_info = [(frame_num, timestamp, desc) for frame_num, timestamp, desc in descriptions]
     
@@ -412,10 +446,13 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             font = cv2.FONT_HERSHEY_SIMPLEX
             max_width = int(width * 0.9)
             
-            # Start with timestamp and full description
-            full_text = f"[{timestamp:.2f}s] {description}"
+            # Start with timestamp and description (different format for synthesis captions)
+            if use_synthesis_captions:
+                full_text = description  # Synthesis captions already include context
+            else:
+                full_text = f"[{timestamp:.2f}s] {description}"
             words = full_text.split()
-            lines = []
+            top_lines = []
             current_line = []
             
             font_scale = min(height * 0.03 / min_line_height, 0.7)
@@ -429,17 +466,17 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                     current_line.append(word)
                 else:
                     if current_line:
-                        lines.append(' '.join(current_line))
+                        top_lines.append(' '.join(current_line))
                     current_line = [word]
             
             if current_line:
-                lines.append(' '.join(current_line))
+                top_lines.append(' '.join(current_line))
 
             # Add transcript as subtitle if not likely hallucination
+            bottom_lines = []
             if not is_likely_hallucination and transcript_text.strip():
                 # Split transcript into lines
                 subtitle_words = transcript_text.split()
-                subtitle_lines = []
                 current_line = []
                 
                 for word in subtitle_words:
@@ -450,30 +487,28 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                         current_line.append(word)
                     else:
                         if current_line:
-                            subtitle_lines.append(' '.join(current_line))
+                            bottom_lines.append(' '.join(current_line))
                         current_line = [word]
                 
                 if current_line:
-                    subtitle_lines.append(' '.join(current_line))
-                
-                lines.extend(subtitle_lines)
+                    bottom_lines.append(' '.join(current_line))
             
-            # Calculate box dimensions
-            line_count = len(lines)
+            # Calculate box dimensions for top overlay (frame descriptions)
+            top_line_count = len(top_lines)
             line_height = max(min_line_height, int(height * 0.03))
-            box_height = line_count * line_height + 2 * padding
+            top_box_height = top_line_count * line_height + 2 * padding
             
-            # Create overlay
+            # Create top overlay for frame descriptions
             overlay = frame.copy()
             cv2.rectangle(overlay, 
                          (margin, margin),
-                         (width - margin, margin + box_height),
+                         (width - margin, margin + top_box_height),
                          (0, 0, 0),
                          -1)
             
-            # Add text
+            # Add frame description text
             y = margin + padding + line_height
-            for line in lines:
+            for line in top_lines:
                 cv2.putText(overlay,
                            line,
                            (margin + padding, y),
@@ -483,6 +518,36 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                            1,
                            cv2.LINE_AA)
                 y += line_height
+            
+            # If we have speech transcription, add bottom overlay
+            if bottom_lines:
+                bottom_line_count = len(bottom_lines)
+                bottom_box_height = bottom_line_count * line_height + 2 * padding
+                bottom_margin = int(height * 0.15)  # Position overlay 15% from bottom
+                
+                # Create bottom overlay for speech transcription
+                cv2.rectangle(overlay,
+                            (margin, height - bottom_box_height - bottom_margin),
+                            (width - margin, height - bottom_margin),
+                            (0, 0, 0),
+                            -1)
+                
+                # Add speech transcription text (centered)
+                y = height - bottom_box_height - bottom_margin + padding + line_height
+                for line in bottom_lines:
+                    # Calculate text width for centering
+                    (text_width, _), _ = cv2.getTextSize(line, font, font_scale, 1)
+                    x = (width - text_width) // 2  # Center the text
+                    
+                    cv2.putText(overlay,
+                               line,
+                               (x, y),
+                               font,
+                               font_scale,
+                               (255, 255, 255),
+                               1,
+                               cv2.LINE_AA)
+                    y += line_height
             
             # Blend overlay with original frame
             alpha = 0.7
@@ -549,7 +614,12 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
     print("Generating video summary...")
     synthesis_output = summarize_with_hosted_llm(transcript, descriptions)
     summary, synthesis_captions = parse_synthesis_output(synthesis_output)
-    print(f"Summary generation complete. Generated {len(synthesis_captions)} synthesis captions.")
+    
+    if use_synthesis_captions and (synthesis_captions is None or len(synthesis_captions) == 0):
+        print("\nError: Failed to generate synthesis captions. Please try again or use frame descriptions.")
+        return "Error: Failed to generate synthesis captions. Please try again or use frame descriptions.", None, None
+    
+    print(f"Summary generation complete. Generated {len(synthesis_captions) if synthesis_captions else 0} synthesis captions.")
 
     # Create captioned video with summary intro
     output_video_path = create_captioned_video(
@@ -572,16 +642,9 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
     gallery_images = []
     video = cv2.VideoCapture(video_path)
     
-    # Use the same caption source for gallery as for video
-    display_descriptions = synthesis_captions if use_synthesis_captions else descriptions
-    
-    for frame_info in display_descriptions:
-        if use_synthesis_captions:
-            timestamp, description = frame_info
-            frame_number = int(timestamp * video.get(cv2.CAP_PROP_FPS))
-        else:
-            frame_number, timestamp, description = frame_info
-            
+    # For gallery display, always use frame descriptions (not synthesis captions)
+    # This helps debug the frame selection and description process
+    for frame_number, timestamp, description in descriptions:
         video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
         success, frame = video.read()
         if success:
@@ -599,7 +662,10 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
             # Split description into lines if too long
             font = cv2.FONT_HERSHEY_SIMPLEX
             max_width = int(width * 0.9)  # Use up to 90% of frame width
-            words = description.split()
+            
+            # Add timestamp line and description
+            full_text = f"Frame {frame_number} [{timestamp:.2f}s]\n{description}"
+            words = full_text.split()
             lines = []
             current_line = []
             
@@ -619,9 +685,6 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
             
             if current_line:
                 lines.append(' '.join(current_line))
-            
-            # Add timestamp line
-            lines.insert(0, f"Frame {frame_number} [{timestamp:.2f}s]")
             
             # Calculate box dimensions
             line_count = len(lines)

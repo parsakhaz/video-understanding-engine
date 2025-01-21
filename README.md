@@ -18,7 +18,7 @@ python main.py video.mp4 --frame-selection --save
 ## Features
 
 ### Core Features
-- Intelligent frame selection using CLIP embeddings
+- Intelligent frame selection using CLIP embeddings and clustering
 - Audio transcription using Whisper
 - Visual scene description using Moondream2
 - Dynamic content synthesis with GPT-4o-mini/Llama
@@ -26,13 +26,12 @@ python main.py video.mp4 --frame-selection --save
 - Accessible video output with captions
 
 ### Video Output Features
-- 5-second intro with comprehensive video summary
 - Intelligent frame descriptions with timestamps
-- Whisper-based speech transcription
-- Hallucination detection for transcripts
+- Whisper-based speech transcription with hallucination detection
 - Adaptive text wrapping and positioning
 - Accessibility-focused caption design
 - Choice between detailed or synthesized captions
+- Original audio preservation with proper synchronization
 
 ### Caption Types
 1. **Full Frame Descriptions**
@@ -54,6 +53,7 @@ python main.py video.mp4 --frame-selection --save
 - Caption persistence between transitions
 - Clear timestamp indicators
 - Separated visual and speech captions
+- Original audio track preservation
 
 ## Architecture Overview
 
@@ -120,10 +120,10 @@ video-summarizer/
      1. Extract frames from video
      2. Generate CLIP embeddings for each frame (bfloat16 precision)
      3. Calculate frame similarities
-     4. Detect novel frames using sliding window analysis
-     5. Cluster similar frames using KMeans
-     6. Select representative frames from each cluster
-   - Output: List of key frame numbers
+     4. Detect novel frames using sliding window analysis (window_size=30)
+     5. Cluster similar frames using KMeans (n_clusters=15)
+     6. Select representative frames with stricter novelty threshold
+   - Output: List of key frame numbers (~20% fewer than previous version)
    - Cache: Embeddings stored in `embedding_cache/<video_name>.npy`
    - Default mode: Samples every 50 frames when not using CLIP selection
 
@@ -132,6 +132,7 @@ video-summarizer/
    - Process:
      1. Extract audio from video
      2. Generate transcript with timestamps
+     3. Apply hallucination detection (words/second analysis)
    - Output: JSON with `{start, end, text}` segments
    - Supported languages: 100+ languages (auto-detected)
    - Accuracy: ~95% for clear English speech
@@ -162,15 +163,29 @@ video-summarizer/
 6. **Video Generation**
    - Format: MP4 with H.264 encoding
    - Components:
-     - 5-second summary intro
-     - Frame descriptions (full or synthesized)
-     - Speech transcriptions
+     - Frame descriptions at top of frame
+       - Full descriptions or synthesized captions (user choice)
+       - High-contrast background (70% opacity)
+       - Timestamp indicators
+     - Speech transcriptions near bottom center
+       - Centered text positioning
+       - 15% margin from bottom
+       - Hallucination filtering
+       - Independent overlay from frame descriptions
    - Features:
      - Adaptive text sizing
      - Automatic line wrapping
-     - Hallucination detection for transcripts
      - High-contrast overlays
      - Responsive to video dimensions
+     - Original audio preservation
+     - Proper audio synchronization
+
+7. **Gallery View** (Web Interface)
+   - Always shows frame descriptions (not synthesis captions)
+   - Includes frame numbers and timestamps
+   - Used for debugging frame selection
+   - Helps visualize key frame detection
+   - Independent from video output format
 
 ## Installation
 
@@ -236,7 +251,7 @@ Options explained:
 Example commands:
 ```bash
 # Process video with all features
-python main.py video.mp4 --frame-selection --save --debug
+python main.py video.mp4 --frame-selection --save
 
 # Quick processing with hosted LLM
 python main.py video.mp4 --save

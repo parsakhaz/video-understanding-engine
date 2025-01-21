@@ -22,7 +22,7 @@ def process_batch(frames, model, preprocess, device):
     batch_size = len(frames)
     preprocessed_images = torch.stack([preprocess(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))).to(device) for frame in frames])
 
-    with torch.no_grad(), torch.cuda.amp.autocast():
+    with torch.no_grad(), torch.amp.autocast('cuda'):
         image_features = model.encode_image(preprocessed_images)
         image_features = F.normalize(image_features, dim=-1)
 
