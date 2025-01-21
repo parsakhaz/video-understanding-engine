@@ -24,7 +24,7 @@ from pydub import AudioSegment
 from pydub.silence import detect_nonsilent
 from difflib import SequenceMatcher
 # Function to trim silence from audio
-def trim_silence(audio_path, min_silence_len=1000, silence_thresh=-65, offset=0):
+def trim_silence(audio_path, min_silence_len=1000, silence_thresh=-35, offset=0):
     """
     Trims silence from the beginning and end of an audio file.
     

@@ -159,7 +159,7 @@ sequenceDiagram
         Main->>AudioProc: extract_audio()
         activate AudioProc
         AudioProc->>AudioProc: detect_silence()
-        Note over AudioProc: threshold=-65dB<br/>min_length=1000ms
+        Note over AudioProc: threshold=-35dB<br/>min_length=1000ms
         AudioProc->>AudioProc: trim_silence()
         AudioProc->>AudioProc: calculate_offset()
         AudioProc-->>Main: trimmed_audio, offset
@@ -581,7 +581,7 @@ The tool generates an MP4 video with the following structure:
 #### Audio Processing Improvements
 - **Silence Trimming**
   - Automatic detection and removal of leading silence
-  - Configurable silence threshold (-65 dB)
+  - Configurable silence threshold (-35 dB)
   - Minimum silence length: 1000ms
   - Timestamp correction to maintain video sync
   - Uses pydub for robust audio analysis
