@@ -22,6 +22,7 @@ import subprocess
 import re
 from pydub import AudioSegment
 from pydub.silence import detect_nonsilent
+from difflib import SequenceMatcher
 # Function to trim silence from audio
 def trim_silence(audio_path, min_silence_len=1000, silence_thresh=-65, offset=0):
     """
@@ -69,6 +70,111 @@ def trim_silence(audio_path, min_silence_len=1000, silence_thresh=-65, offset=0)
     except Exception as e:
         print(f"Error trimming silence: {str(e)}")
         return audio_path, 0
+
+def similar(a, b, threshold=0.90):
+    """Return True if strings are similar above threshold."""
+    return SequenceMatcher(None, a, b).ratio() > threshold
+
+def clean_transcript(segments):
+    """Clean up transcript by removing duplicates and background noise."""
+    # Common background noise phrases to filter
+    noise_phrases = [
+        "ambient music",
+        "music playing",
+        "background music",
+        "music",
+        "captions",
+        "[Music]",
+        "♪",
+        "♫"
+    ]
+    
+    # Common boilerplate/disclaimer phrases to detect
+    boilerplate_phrases = [
+        "work of fiction",
+        "any resemblance",
+        "coincidental",
+        "unintentional",
+        "all rights reserved",
+        "copyright",
+        "trademark"
+    ]
+    
+    # Common speech indicators that we should keep even if they violate other rules
+    speech_indicators = [
+        "says",
+        "said",
+        "asks",
+        "asked",
+        "!",
+        "?",
+        ":",
+        "\"",  # Added quotes as speech indicator
+        "'",   # Added apostrophe as speech indicator
+    ]
+    
+    # First pass: Remove segments that are just noise or boilerplate
+    filtered_segments = []
+    for segment in segments:
+        text = segment["text"].strip().lower()
+        
+        # Skip if just noise
+        if any(phrase in text.lower() for phrase in noise_phrases) and text not in ["music", "captions"]:
+            continue
+            
+        # Skip if contains boilerplate phrases and no speech indicators
+        boilerplate_count = sum(1 for phrase in boilerplate_phrases if phrase in text.lower())
+        speech_indicator_count = sum(1 for indicator in speech_indicators if indicator in text)
+        
+        if boilerplate_count >= 2 and speech_indicator_count == 0:
+            continue
+            
+        filtered_segments.append(segment)
+    
+    # Second pass: Remove duplicates and near-duplicates
+    cleaned_segments = []
+    for i, current in enumerate(filtered_segments):
+        # Skip if too similar to previous segment
+        if i > 0 and similar(current["text"], filtered_segments[i-1]["text"]):
+            continue
+            
+        # Skip if too similar to any of the next 3 segments (for repeated content)
+        next_segments = filtered_segments[i+1:i+4]
+        if any(similar(current["text"], next_seg["text"]) for next_seg in next_segments):
+            continue
+            
+        # Check for hallucination based on multiple criteria
+        segment_duration = current["end"] - current["start"]
+        text = current["text"].strip()
+        words = text.split()
+        words_per_second = len(words) / segment_duration if segment_duration > 0 else 0
+        
+        # Calculate text metrics
+        unique_words_ratio = len(set(words)) / len(words) if words else 0
+        has_speech_indicators = any(indicator in text for indicator in speech_indicators)
+        has_multiple_sentences = len(re.findall(r'[.!?]+', text)) > 1
+        avg_word_length = sum(len(word) for word in words) / len(words) if words else 0
+        
+        # Skip if ALL of the following are true:
+        # 1. Words per second is outside normal speech range
+        # 2. Segment is very long
+        # 3. Text is highly repetitive
+        # 4. No speech indicators present
+        # 5. Not multiple sentences
+        # 6. Average word length is suspicious
+        should_skip = (
+            (words_per_second < 0.25 or words_per_second > 7.5) and  # More lenient WPS range
+            segment_duration > 20.0 and  # Longer maximum duration
+            unique_words_ratio < 0.3 and  # More lenient repetition threshold
+            not has_speech_indicators and
+            not has_multiple_sentences and
+            (avg_word_length < 2 or avg_word_length > 15)  # Suspicious word lengths
+        )
+        
+        if not should_skip:
+            cleaned_segments.append(current)
+    
+    return cleaned_segments
 
 # Function to transcribe audio from a video file using Whisper model
 def transcribe_video(video_path):
@@ -131,13 +237,24 @@ def transcribe_video(video_path):
             result = model.transcribe(trimmed_audio_path)
 
             # Process the result to include timestamps, adjusting for trimmed silence
-            timestamped_transcript = []
+            raw_transcript = []
             for segment in result["segments"]:
-                timestamped_transcript.append({
-                    "start": segment["start"] + start_offset_seconds,  # Add offset to start time
-                    "end": segment["end"] + start_offset_seconds + 0.15,  # Add offset to end time plus 0.1s extension
-                    "text": segment["text"]
+                raw_transcript.append({
+                    "start": segment["start"] + start_offset_seconds,
+                    "end": segment["end"] + start_offset_seconds + 0.15,
+                    "text": segment["text"].strip()
                 })
+            
+            # Clean up the transcript
+            timestamped_transcript = clean_transcript(raw_transcript)
+            
+            if not timestamped_transcript:  # If all segments were filtered out
+                timestamped_transcript = [{
+                    "start": 0,
+                    "end": 0,
+                    "text": ""
+                }]
+                
         except RuntimeError as e:
             print(f"Error transcribing video: {str(e)}")
             timestamped_transcript = [{
@@ -861,15 +978,15 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                 if height >= 1440:  # 2K and above
                     base_increase = 0.6
                     bg_padding = 20
-                    bottom_margin = int(height * 0.2)
+                    bottom_margin = int(height * 0.25)  # Increased from 0.2
                 elif height >= 720:  # HD
                     base_increase = 0.4
                     bg_padding = 10
-                    bottom_margin = int(height * 0.15)
+                    bottom_margin = int(height * 0.22)  # Increased from 0.15
                 else:  # SD
                     base_increase = 0.1
                     bg_padding = 5
-                    bottom_margin = int(height * 0.1)
+                    bottom_margin = int(height * 0.18)  # Increased from 0.1
                 
                 transcript_font_scale = min(height * 0.03 / min_line_height, 0.7) + base_increase
                 
@@ -952,7 +1069,7 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                                 (bg_x2, bg_y2),
                                 (0, 0, 0),
                                 -1)
-                    frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+                    frame = cv.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
                     
                     # Draw text directly on frame to keep it fully opaque
                     cv2.putText(frame,
