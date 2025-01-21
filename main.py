@@ -25,31 +25,63 @@ import re
 def transcribe_video(video_path):
     print(f"Loading audio model")
 
+    # Check if video has an audio stream using ffprobe
+    has_audio = False
+    try:
+        cmd = [
+            'ffprobe', 
+            '-i', video_path,
+            '-show_streams', 
+            '-select_streams', 'a', 
+            '-loglevel', 'error'
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        has_audio = len(result.stdout.strip()) > 0
+    except subprocess.CalledProcessError:
+        print("Error checking audio stream")
+    
+    if not has_audio:
+        print("No audio track detected. Processing video with empty transcript.")
+        # Return empty transcript with same structure
+        return [{
+            "start": 0,
+            "end": 0,
+            "text": ""
+        }]
+
     # Suppress the FutureWarning from torch.load
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=FutureWarning)
         model = whisper.load_model("large")
 
     print(f"Audio model loaded")
-
     print(f"Transcribing video")
 
-    # Transcribe the audio from the video file
-    result = model.transcribe(video_path)
+    try:
+        # Transcribe the audio from the video file
+        result = model.transcribe(video_path)
 
-    # Process the result to include timestamps
-    timestamped_transcript = []
-    for segment in result["segments"]:
-        timestamped_transcript.append({
-            "start": segment["start"],
-            "end": segment["end"],
-            "text": segment["text"]
-        })
-
-    # Unload the model
-    del model
-    torch.cuda.empty_cache()  # If using CUDA
-    print("Audio model unloaded")
+        # Process the result to include timestamps
+        timestamped_transcript = []
+        for segment in result["segments"]:
+            timestamped_transcript.append({
+                "start": segment["start"],
+                "end": segment["end"],
+                "text": segment["text"]
+            })
+    except RuntimeError as e:
+        print(f"Error transcribing video: {str(e)}")
+        # Return empty transcript if transcription fails
+        timestamped_transcript = [{
+            "start": 0,
+            "end": 0,
+            "text": ""
+        }]
+    finally:
+        # Unload the model
+        del model
+        torch.cuda.empty_cache()  # If using CUDA
+        print("Audio model unloaded")
 
     return timestamped_transcript
 
@@ -429,6 +461,21 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
     """Create a video with persistent captions from keyframe descriptions and transcriptions."""
     print("\nCreating captioned video...")
     
+    # Check if video has an audio stream
+    has_audio = False
+    try:
+        cmd = [
+            'ffprobe', 
+            '-i', video_path,
+            '-show_streams', 
+            '-select_streams', 'a', 
+            '-loglevel', 'error'
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        has_audio = len(result.stdout.strip()) > 0
+    except subprocess.CalledProcessError:
+        print("Error checking audio stream")
+
     # Validate synthesis captions if requested
     if use_synthesis_captions:
         if not synthesis_captions:
@@ -687,18 +734,26 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
     ]
     subprocess.run(concat_cmd, check=True)
     
-    # Now merge with audio, adjusting for summary duration
-    print("\nMerging with audio...")
-    cmd = [
-        'ffmpeg', '-y',
-        '-i', concat_output,      # Input concatenated video
-        '-i', video_path,         # Input original video (for audio)
-        '-filter_complex', f'[1:a]adelay={int(summary_duration*1000)}|{int(summary_duration*1000)}[delayed_audio]',  # Delay audio
-        '-c:v', 'copy',           # Copy video stream as is
-        '-map', '0:v',            # Use video from first input
-        '-map', '[delayed_audio]', # Use delayed audio
-        final_output
-    ]
+    # Modify ffmpeg command based on audio presence
+    if has_audio:
+        cmd = [
+            'ffmpeg', '-y',
+            '-i', concat_output,      # Input concatenated video
+            '-i', video_path,         # Input original video (for audio)
+            '-filter_complex', f'[1:a]adelay={int(summary_duration*1000)}|{int(summary_duration*1000)}[delayed_audio]',  # Delay audio
+            '-c:v', 'copy',           # Copy video stream as is
+            '-map', '0:v',            # Use video from first input
+            '-map', '[delayed_audio]', # Use delayed audio
+            final_output
+        ]
+    else:
+        # If no audio, just copy the video stream
+        cmd = [
+            'ffmpeg', '-y',
+            '-i', concat_output,
+            '-c:v', 'copy',
+            final_output
+        ]
     
     subprocess.run(cmd, check=True)
     
