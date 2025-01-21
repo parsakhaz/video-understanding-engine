@@ -4,7 +4,7 @@ import cv2
 import whisper
 import warnings
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import torch
 import os
 from tqdm import tqdm
@@ -54,12 +54,13 @@ def transcribe_video(video_path):
 # Function to describe frames using a Vision-Language Model
 def describe_frames(video_path, frame_numbers):
     print("Loading Vision-Language model...")
-    model_id = "vikhyatk/moondream2"
-    revision = "2024-07-23"
     model = AutoModelForCausalLM.from_pretrained(
-        model_id, trust_remote_code=True, revision=revision, torch_dtype=torch.bfloat16
-    ).to(device=torch.device("cuda"))
-    tokenizer = AutoTokenizer.from_pretrained(model_id, revision=revision)
+        "vikhyatk/moondream2",
+        revision="2025-01-09",
+        trust_remote_code=True,
+        device_map={"": "cuda"}
+    )
+    tokenizer = AutoTokenizer.from_pretrained("vikhyatk/moondream2", revision="2025-01-09")
     print("Vision-Language model loaded")
 
     # Load prompt from file
@@ -302,7 +303,7 @@ def summarize_with_hosted_llm(transcript, descriptions):
     # Extract and return the generated summary
     return completion.choices[0].message.content.strip()
 
-def process_video_web(video_file):
+def process_video_web(video_file, use_frame_selection=False):
     # This function will be called by Gradio when a video is uploaded
     video_path = video_file.name
     print(f"Processing video: {video_path}")
@@ -312,15 +313,19 @@ def process_video_web(video_file):
     # Get frame count
     frame_count = get_frame_count(video_path)
     if frame_count == 0:
-        return "Error: Could not process video."
+        return "Error: Could not process video.", None
 
     # Transcribe the video
     transcript = transcribe_video(video_path)
     print(f"Transcript generated.")
 
-    # Select frames (using default method)
-    print("Sampling every 50 frames")
-    frame_numbers = list(range(0, frame_count, 50))
+    # Select frames based on the chosen method
+    if use_frame_selection:
+        print("Using frame selection algorithm")
+        frame_numbers = process_video(video_path)
+    else:
+        print("Sampling every 50 frames")
+        frame_numbers = list(range(0, frame_count, 50))
 
     # Describe frames
     descriptions = describe_frames(video_path, frame_numbers)
@@ -338,12 +343,93 @@ def process_video_web(video_file):
     print("Saving output to JSON file...")
     save_output(video_path, frame_count, transcript, descriptions, summary, total_run_time)
 
-    return f"Video Summary:\n{summary}\n\nTime taken: {total_run_time:.2f} seconds"
+    # Prepare frames with captions for gallery display
+    gallery_images = []
+    video = cv2.VideoCapture(video_path)
+    
+    for frame_number, timestamp, description in descriptions:
+        video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+        success, frame = video.read()
+        if success:
+            # Convert BGR to RGB
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Get frame dimensions
+            height, width = frame.shape[:2]
+            
+            # Calculate text parameters
+            margin = 8  # pixels from edge
+            padding = 10  # pixels inside box
+            min_line_height = 20  # minimum pixels per line
+            
+            # Split description into lines if too long
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            max_width = int(width * 0.9)  # Use up to 90% of frame width
+            words = description.split()
+            lines = []
+            current_line = []
+            
+            # Calculate appropriate font scale
+            font_scale = min(height * 0.03 / min_line_height, 0.7)  # Scale with frame height but cap it
+            
+            for word in words:
+                test_line = ' '.join(current_line + [word])
+                (text_width, _), _ = cv2.getTextSize(test_line, font, font_scale, 1)
+                
+                if text_width <= max_width - 2 * margin:
+                    current_line.append(word)
+                else:
+                    if current_line:
+                        lines.append(' '.join(current_line))
+                    current_line = [word]
+            
+            if current_line:
+                lines.append(' '.join(current_line))
+            
+            # Add timestamp line
+            lines.insert(0, f"Frame {frame_number} [{timestamp:.2f}s]")
+            
+            # Calculate box dimensions
+            line_count = len(lines)
+            line_height = max(min_line_height, int(height * 0.03))  # Scale with frame height
+            box_height = line_count * line_height + 2 * padding
+            
+            # Create overlay for text background
+            overlay = frame.copy()
+            cv2.rectangle(overlay, 
+                         (margin, margin),
+                         (width - margin, margin + box_height),
+                         (0, 0, 0),
+                         -1)
+            
+            # Add text
+            y = margin + padding + line_height
+            for line in lines:
+                cv2.putText(overlay,
+                           line,
+                           (margin + padding, y),
+                           font,
+                           font_scale,
+                           (255, 255, 255),
+                           1,
+                           cv2.LINE_AA)
+                y += line_height
+            
+            # Blend overlay with original frame
+            alpha = 0.7
+            frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+            
+            # Convert back to PIL for gallery display
+            frame_pil = Image.fromarray(frame)
+            gallery_images.append(frame_pil)
+    
+    video.release()
+
+    return f"Video Summary:\n{summary}\n\nTime taken: {total_run_time:.2f} seconds", gallery_images
 
 def main():
     parser = argparse.ArgumentParser(description="Process a video file.")
     parser.add_argument('video', type=str, nargs='?', help='Path to the video file')
-    parser.add_argument('--debug', action='store_true', help='Display frames with descriptions')
     parser.add_argument('--save', action='store_true', help='Save output to a JSON file')
     parser.add_argument('--local', action='store_true', help='Use local Llama model for summarization')
     parser.add_argument('--frame-selection', action='store_true', help='Use CLIP-based key frame selection algorithm')
@@ -351,62 +437,45 @@ def main():
     args = parser.parse_args()
 
     if args.web:
-        # Create Gradio interface
+        # Create Gradio interface with gallery
         iface = gr.Interface(
             fn=process_video_web,
-            inputs=gr.File(label="Upload Video"),
-            outputs="text",
+            inputs=[
+                gr.File(label="Upload Video"),
+                gr.Checkbox(label="Use Frame Selection", value=False)
+            ],
+            outputs=[
+                gr.Textbox(label="Summary"),
+                gr.Gallery(label="Analyzed Frames")
+            ],
             title="Video Summarizer",
-            description="Upload a video to get a summary.",
+            description="Upload a video to get a summary and view analyzed frames.",
             allow_flagging="never"
         )
         iface.launch()
     elif args.video:
-        # Existing command-line processing logic
+        # Process video and prepare gallery output
         print(f"Processing video: {args.video}")
-
+        
         start_time = time.time()
-
+        
         # Get frame count
         frame_count = get_frame_count(args.video)
         if frame_count == 0:
             return
-
-        # Transcribe the video to get the audio captions
-        transcript = transcribe_video(args.video)
-        print(f"Transcript: {transcript}")
-
-        # Select frames based on the chosen method
-        if args.frame_selection:
-            print("Using frame selection algorithm")
-            frame_numbers = process_video(args.video)
-        else:
-            print("Sampling every 50 frames")
-            # Calculate frame numbers to describe every 50 frames
-            frame_numbers = list(range(0, frame_count, 50))
-
-        # Describe frames
-        descriptions = describe_frames(args.video, frame_numbers)
-
-        print("Generating video summary...")
-        if args.local:
-            print("Using local Llama model for summarization...")
-            summary = summarize_with_llama(transcript, descriptions)
-        else:
-            print("Using hosted LLM for summarization...")
-            summary = summarize_with_hosted_llm(transcript, descriptions)
-        print("Summary generation complete.")
-        print(f"Video Summary:\n{summary}")
-
+            
+        # Process video using the web function for consistency
+        summary, gallery_images = process_video_web(
+            type('VideoFile', (), {'name': args.video})(),
+            use_frame_selection=args.frame_selection
+        )
+        
+        # Print the summary and processing time
+        print("\nVideo Summary:")
+        print(summary)
+        
         total_run_time = time.time() - start_time
-        print(f"Time taken: {total_run_time:.2f} seconds")
-
-        if args.save:
-            print("Saving output to JSON file...")
-            save_output(args.video, frame_count, transcript, descriptions, summary, total_run_time)
-
-        if args.debug:
-            display_described_frames(args.video, descriptions)
+        print(f"\nTotal processing time: {total_run_time:.2f} seconds")
     else:
         print("Please provide a video file path or use the --web flag to start the web interface.")
 
