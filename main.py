@@ -301,11 +301,13 @@ Requirements for Captions:
 1. Generate exactly {num_captions} captions
 2. Each caption MUST:
    - Start with a timestamp in [X.X] format
+   - Use the EARLIEST timestamp where a scene or action begins
    - Be 20-50 words long
    - Focus on key events and context
    - Integrate both visual and audio information when relevant
 3. Timestamps should be reasonably spaced throughout the video
 4. Focus on narrative flow and context, not just describing what's visible
+5. IMPORTANT: When multiple frames describe the same scene or action, use the EARLIEST timestamp
 
 Input sections:
 <transcript>
@@ -510,17 +512,20 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
         min_time_gap = 1.2  # Minimum time gap between captions in seconds
         
         for i, (timestamp, text) in enumerate(synthesis_captions):
+            # Adjust timestamp to be 0.5s earlier, but not before 0
+            adjusted_timestamp = max(0.0, timestamp - 0.5)
+            
             # Skip if this caption is too close to the previous one
             if i > 0:
-                prev_timestamp = synthesis_captions[i-1][0]
-                if timestamp - prev_timestamp < min_time_gap:
+                prev_timestamp = max(0.0, synthesis_captions[i-1][0] - 0.5)  # Use adjusted previous timestamp
+                if adjusted_timestamp - prev_timestamp < min_time_gap:
                     # Remove the previous caption if it exists in frame_info
                     if frame_info and frame_info[-1][1] == prev_timestamp:
                         frame_info.pop()
             
-            # Find nearest frame number
-            frame_number = int(timestamp * fps)
-            frame_info.append((frame_number, timestamp, text))
+            # Find nearest frame number using adjusted timestamp
+            frame_number = int(adjusted_timestamp * fps)
+            frame_info.append((frame_number, adjusted_timestamp, text))
             
         print(f"After filtering close captions: {len(frame_info)} captions remaining")
     else:

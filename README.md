@@ -78,9 +78,12 @@ graph TD
     end
     
     subgraph "Audio Pipeline"
-    C --> I[Whisper Model]
+    C --> AA[Audio Stream Check]
+    AA -->|Has Audio| I[Whisper Model]
+    AA -->|No Audio| AB[Empty Transcript]
     I --> J[Timestamped Transcript]
     J --> K[Hallucination Detection]
+    AB --> K
     end
     
     F --> L[Selected Frames]
@@ -106,8 +109,13 @@ graph TD
     U --> W[Video Assembly]
     V --> W
     A --> X[Audio Stream]
-    X --> Y[FFmpeg Merge]
+    X --> AC[Audio Check]
+    AC -->|Has Audio| Y[FFmpeg Merge]
+    AC -->|No Audio| AD[Direct Output]
     W --> Y
+    W --> AD
+    Y --> AE[Final Video]
+    AD --> AE
     end
 ```
 
@@ -126,6 +134,8 @@ sequenceDiagram
     User->>Main: process_video_web(video_file)
     activate Main
     
+    Main->>Main: Check audio stream
+    
     par Frame Analysis
         Main->>FrameSelection: process_video(video_path)
         activate FrameSelection
@@ -141,6 +151,7 @@ sequenceDiagram
     and Audio Processing
         Main->>Whisper: transcribe_video(video_path)
         activate Whisper
+        Note over Whisper: Handle missing audio<br/>Return empty transcript if needed
         Whisper-->>Main: timestamped_transcript
         deactivate Whisper
     end
@@ -153,7 +164,7 @@ sequenceDiagram
 
     Main->>LLM: summarize_with_hosted_llm(transcript, descriptions)
     activate LLM
-    Note over LLM: Generate summary<br/>Create synthesis captions<br/>Validate XML format
+    Note over LLM: Generate summary<br/>Create synthesis captions<br/>Validate XML format<br/>Use earliest timestamps
     LLM-->>Main: synthesis_output
     deactivate LLM
 
@@ -162,13 +173,14 @@ sequenceDiagram
 
     Main->>VideoGen: create_captioned_video()
     activate VideoGen
-    Note over VideoGen: Process frames<br/>Add overlays<br/>Handle captions
+    Note over VideoGen: Create summary intro (5s)<br/>Process main video<br/>Add overlays<br/>Handle captions
     VideoGen->>VideoGen: Filter close captions
-    Note over VideoGen: min_time_gap=2.5s
+    Note over VideoGen: min_time_gap=1.2s<br/>Adjust timing -0.5s
     VideoGen->>VideoGen: Add frame descriptions
     VideoGen->>VideoGen: Add speech transcripts
-    Note over VideoGen: Position & style<br/>Handle hallucinations
-    VideoGen->>VideoGen: FFmpeg merge audio
+    Note over VideoGen: Position & style<br/>Handle hallucinations<br/>ASCII text normalization
+    VideoGen->>VideoGen: FFmpeg concat & merge
+    Note over VideoGen: Handle missing audio<br/>Proper audio sync
     VideoGen-->>Main: output_video_path
     deactivate VideoGen
 
@@ -255,29 +267,46 @@ video-summarizer/
    - Temperature: 0.7
 
 6. **Video Generation**
-   - Format: MP4 with H.264 encoding
-   - Components:
-     - Frame descriptions at top of frame
-       - Full descriptions or synthesized captions (user choice)
-       - High-contrast background (70% opacity)
-       - Timestamp indicators (for frame descriptions only)
-       - Automatic deduplication of close captions
-     - Speech transcriptions near bottom center
-       - Centered text positioning
-       - 15% margin from bottom
-       - Larger font size (+4 sizes)
-       - Individual background boxes per line
-       - Hallucination filtering
-       - Independent overlay from frame descriptions
+   - Input: Original video, descriptions, summary, transcript
+   - Process:
+     1. Create 5-second summary intro
+     2. Process main video with captions
+     3. Concatenate using FFmpeg
    - Features:
-     - Adaptive text sizing
-     - Automatic line wrapping
+     - Predictive caption timing (0.5s early display)
+     - Minimum 1.2s gap between captions
+     - ASCII-compatible text rendering
+     - Graceful handling of missing audio
+     - Smart timestamp selection
+     - Adaptive font scaling
      - High-contrast overlays
-     - Responsive to video dimensions
-     - Original audio preservation
-     - Proper audio synchronization
+     - Centered transcript positioning
+     - Individual background boxes
+     - Automatic audio stream detection
 
-7. **Gallery View** (Web Interface)
+7. **Recent Improvements**
+   - Enhanced timing and synchronization:
+     - Predictive caption timing with 0.5s early display
+     - Smart timestamp selection using earliest scene detection
+     - Minimum 1.2s gap between captions
+     - Automatic audio stream detection
+   - Visual enhancements:
+     - ASCII-compatible text rendering
+     - Improved contrast with semi-transparent overlays
+     - Centered transcript text with individual boxes
+     - Adaptive font scaling
+   - Robustness improvements:
+     - Graceful handling of missing audio streams
+     - Fallback to frame descriptions if synthesis fails
+     - Smart handling of caption timing edge cases
+     - Comprehensive error handling
+   - Quality of life:
+     - Automatic video property detection
+     - Progress tracking
+     - Debug logging
+     - Informative status messages
+
+8. **Gallery View** (Web Interface)
    - Always shows frame descriptions (not synthesis captions)
    - Includes frame numbers and timestamps
    - Used for debugging frame selection
