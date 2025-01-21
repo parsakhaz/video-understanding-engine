@@ -15,4 +15,5 @@ openai
 python-dotenv
 gradio
 pyvips
+pydub
 # flash-attn

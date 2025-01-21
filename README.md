@@ -79,9 +79,13 @@ graph TD
     
     subgraph "Audio Pipeline"
     C --> AA[Audio Stream Check]
-    AA -->|Has Audio| I[Whisper Model]
+    AA -->|Has Audio| AE[Audio Extraction]
     AA -->|No Audio| AB[Empty Transcript]
-    I --> J[Timestamped Transcript]
+    AE --> AF[Silence Detection]
+    AF --> AG[Silence Trimming]
+    AG --> I[Whisper Model]
+    I --> AH[Timestamp Adjustment]
+    AH --> J[Timestamped Transcript]
     J --> K[Hallucination Detection]
     AB --> K
     end
@@ -106,16 +110,18 @@ graph TD
     subgraph "Video Generation"
     T --> U[Frame Description Overlay]
     K --> V[Speech Transcript Overlay]
-    U --> W[Video Assembly]
-    V --> W
+    U --> AI[Background Layer]
+    AI --> AJ[Text Layer]
+    V --> AI
+    AJ --> W[Video Assembly]
     A --> X[Audio Stream]
     X --> AC[Audio Check]
     AC -->|Has Audio| Y[FFmpeg Merge]
     AC -->|No Audio| AD[Direct Output]
     W --> Y
     W --> AD
-    Y --> AE[Final Video]
-    AD --> AE
+    Y --> AK[Final Video]
+    AD --> AK
     end
 ```
 
@@ -126,6 +132,7 @@ sequenceDiagram
     participant User
     participant Main
     participant FrameSelection
+    participant AudioProc
     participant Whisper
     participant Moondream
     participant LLM
@@ -149,9 +156,17 @@ sequenceDiagram
         FrameSelection-->>Main: key_frame_numbers
         deactivate FrameSelection
     and Audio Processing
-        Main->>Whisper: transcribe_video(video_path)
+        Main->>AudioProc: extract_audio()
+        activate AudioProc
+        AudioProc->>AudioProc: detect_silence()
+        Note over AudioProc: threshold=-20dB<br/>min_length=1000ms
+        AudioProc->>AudioProc: trim_silence()
+        AudioProc->>AudioProc: calculate_offset()
+        AudioProc-->>Main: trimmed_audio, offset
+        deactivate AudioProc
+        Main->>Whisper: transcribe_video(trimmed_audio)
         activate Whisper
-        Note over Whisper: Handle missing audio<br/>Return empty transcript if needed
+        Note over Whisper: Handle missing audio<br/>Adjust timestamps<br/>Add +0.15s duration
         Whisper-->>Main: timestamped_transcript
         deactivate Whisper
     end
@@ -176,6 +191,9 @@ sequenceDiagram
     Note over VideoGen: Create summary intro (5s)<br/>Process main video<br/>Add overlays<br/>Handle captions
     VideoGen->>VideoGen: Filter close captions
     Note over VideoGen: min_time_gap=1.2s<br/>Adjust timing -0.5s
+    VideoGen->>VideoGen: Create background layer
+    VideoGen->>VideoGen: Add opaque text layer
+    Note over VideoGen: Separate rendering passes<br/>70% background opacity<br/>100% text opacity
     VideoGen->>VideoGen: Add frame descriptions
     VideoGen->>VideoGen: Add speech transcripts
     Note over VideoGen: Position & style<br/>Handle hallucinations<br/>ASCII text normalization
@@ -555,3 +573,34 @@ The tool generates an MP4 video with the following structure:
    - Automatic text wrapping
    - Responsive font sizing
    - Clear timestamp indicators
+
+### Recent Updates
+
+#### Audio Processing Improvements
+- **Silence Trimming**
+  - Automatic detection and removal of leading silence
+  - Configurable silence threshold (-20 dB)
+  - Minimum silence length: 1000ms
+  - Timestamp correction to maintain video sync
+  - Uses pydub for robust audio analysis
+
+#### Caption Enhancements
+- **Transcript Display**
+  - Extended display duration (+0.15s per segment)
+  - Accurate timing with silence trimming compensation
+  - Captions only display during valid time periods
+  - Proper handling of silent gaps between segments
+
+- **Visual Improvements**
+  - 100% opaque white text for maximum readability
+  - Semi-transparent black backgrounds (70% opacity)
+  - Separate rendering passes for backgrounds and text
+  - Improved text positioning and spacing
+  - Smart quote and apostrophe normalization
+
+#### Technical Improvements
+- Proper timestamp synchronization after silence trimming
+- More robust error handling for audio processing
+- Improved temporary file cleanup
+- Better handling of videos without audio tracks
+- Enhanced memory management for large videos

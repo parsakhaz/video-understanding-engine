@@ -20,6 +20,56 @@ from frame_selection import process_video
 import gradio as gr
 import subprocess
 import re
+from pydub import AudioSegment
+from pydub.silence import detect_nonsilent
+# Function to trim silence from audio
+def trim_silence(audio_path, min_silence_len=1000, silence_thresh=-20, offset=0):
+    """
+    Trims silence from the beginning and end of an audio file.
+    
+    Args:
+        audio_path: Path to the audio file
+        min_silence_len: Minimum length of silence (in ms) to detect
+        silence_thresh: Silence threshold in dB
+        offset: Number of milliseconds to keep before and after non-silent sections
+    
+    Returns:
+        Tuple of (trimmed_audio_path, start_offset_seconds)
+    """
+    try:
+        # Load audio file
+        audio = AudioSegment.from_file(audio_path)
+        
+        # Find non-silent sections
+        nonsilent_ranges = detect_nonsilent(
+            audio,
+            min_silence_len=min_silence_len,
+            silence_thresh=silence_thresh
+        )
+        
+        if not nonsilent_ranges:
+            print("No non-silent sections found, returning original audio")
+            return audio_path, 0
+            
+        # Get start and end times
+        start_trim = max(0, nonsilent_ranges[0][0] - offset)
+        end_trim = min(len(audio), nonsilent_ranges[-1][1] + offset)
+        
+        # Calculate the start offset in seconds
+        start_offset_seconds = start_trim / 1000.0  # Convert ms to seconds
+        
+        # Trim the audio
+        trimmed_audio = audio[start_trim:end_trim]
+        
+        # Save trimmed audio
+        output_path = audio_path.rsplit('.', 1)[0] + '_trimmed.' + audio_path.rsplit('.', 1)[1]
+        trimmed_audio.export(output_path, format=audio_path.rsplit('.', 1)[1])
+        
+        return output_path, start_offset_seconds
+    except Exception as e:
+        print(f"Error trimming silence: {str(e)}")
+        return audio_path, 0
+
 # Function to transcribe audio from a video file using Whisper model
 def transcribe_video(video_path):
     print(f"Loading audio model")
@@ -46,39 +96,76 @@ def transcribe_video(video_path):
             "end": 0,
             "text": ""
         }]
-    # Suppress the FutureWarning from torch.load
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=FutureWarning)
-        model = whisper.load_model("large")
 
-    print(f"Audio model loaded")
-    print(f"Transcribing video")
-
+    # Extract audio from video
+    audio_path = os.path.join('outputs', f'temp_audio_{int(time.time())}.wav')
+    os.makedirs('outputs', exist_ok=True)
+    
     try:
-        # Transcribe the audio from the video file
-        result = model.transcribe(video_path)
+        # Extract audio using ffmpeg
+        extract_cmd = [
+            'ffmpeg', '-y',
+            '-i', video_path,
+            '-vn',  # No video
+            '-acodec', 'pcm_s16le',  # PCM format
+            '-ar', '16000',  # 16kHz sample rate
+            '-ac', '1',  # Mono
+            audio_path
+        ]
+        subprocess.run(extract_cmd, check=True)
+        
+        # Trim silence from audio and get the start offset
+        trimmed_audio_path, start_offset_seconds = trim_silence(audio_path)
+        print(f"Trimmed {start_offset_seconds:.2f} seconds of silence from start")
+        
+        # Suppress the FutureWarning from torch.load
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=FutureWarning)
+            model = whisper.load_model("large")
 
-        # Process the result to include timestamps
-        timestamped_transcript = []
-        for segment in result["segments"]:
-            timestamped_transcript.append({
-                "start": segment["start"],
-                "end": segment["end"],
-                "text": segment["text"]
-            })
-    except RuntimeError as e:
-        print(f"Error transcribing video: {str(e)}")
-        # Return empty transcript if transcription fails
+        print(f"Audio model loaded")
+        print(f"Transcribing video")
+
+        try:
+            # Transcribe the trimmed audio
+            result = model.transcribe(trimmed_audio_path)
+
+            # Process the result to include timestamps, adjusting for trimmed silence
+            timestamped_transcript = []
+            for segment in result["segments"]:
+                timestamped_transcript.append({
+                    "start": segment["start"] + start_offset_seconds,  # Add offset to start time
+                    "end": segment["end"] + start_offset_seconds + 0.15,  # Add offset to end time plus 0.1s extension
+                    "text": segment["text"]
+                })
+        except RuntimeError as e:
+            print(f"Error transcribing video: {str(e)}")
+            timestamped_transcript = [{
+                "start": 0,
+                "end": 0,
+                "text": ""
+            }]
+    except Exception as e:
+        print(f"Error processing audio: {str(e)}")
         timestamped_transcript = [{
             "start": 0,
             "end": 0,
             "text": ""
         }]
     finally:
+        # Clean up temporary files
+        try:
+            os.remove(audio_path)
+            if 'trimmed_audio_path' in locals() and audio_path != trimmed_audio_path:
+                os.remove(trimmed_audio_path)
+        except Exception as e:
+            print(f"Error cleaning up temporary files: {str(e)}")
+        
         # Unload the model
-        del model
-        torch.cuda.empty_cache()  # If using CUDA
-        print("Audio model unloaded")
+        if 'model' in locals():
+            del model
+            torch.cuda.empty_cache()  # If using CUDA
+            print("Audio model unloaded")
 
     return timestamped_transcript
 
@@ -492,10 +579,10 @@ def parse_synthesis_output(output: str) -> tuple:
 
 def create_summary_clip(summary: str, width: int, height: int, fps: int) -> str:
     """Create a video clip with centered summary text."""
-    # Calculate duration based on reading speed (400 words/min) + 20% buffer
+    # Calculate duration based on reading speed (400 words/min) - 20% buffer
     word_count = len(summary.split())
     base_duration = (word_count / 400) * 60  # Convert to seconds
-    duration = base_duration * 1.2  # Add 20% buffer
+    duration = base_duration * 0.8  # Add -30% buffer
     total_frames = int(duration * fps)
     
     # Create output path
@@ -707,6 +794,7 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             words = full_text.split()
             top_lines = []
             current_line = []
+            bottom_lines = []  # Initialize bottom_lines here, outside any conditional blocks
             
             font_scale = min(height * 0.03 / min_line_height, 0.7)
             
@@ -733,7 +821,7 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                 # Split transcript into lines
                 subtitle_words = current_transcript_text.split()
                 current_line = []
-                bottom_lines = []
+                bottom_lines = []  # Reset bottom_lines here
                 
                 # Adjust font and padding based on resolution tiers
                 if height >= 1440:  # 2K and above
