@@ -1069,7 +1069,7 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                                 (bg_x2, bg_y2),
                                 (0, 0, 0),
                                 -1)
-                    frame = cv.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+                    frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
                     
                     # Draw text directly on frame to keep it fully opaque
                     cv2.putText(frame,
