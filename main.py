@@ -664,22 +664,28 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                    current_time >= frame_info[current_desc_idx + 1][1]):
                 current_desc_idx += 1
 
-            # Find appropriate transcript segment
+            # Find appropriate transcript segment and check if we're within its time period
+            current_transcript_text = ""
             while (current_transcript_idx < len(transcript) - 1 and 
                    current_time >= transcript[current_transcript_idx + 1]["start"]):
                 current_transcript_idx += 1
+            
+            # Only use transcript text if we're within its time period
+            transcript_segment = transcript[current_transcript_idx]
+            if (current_time >= transcript_segment["start"] and 
+                current_time <= transcript_segment["end"]):
+                transcript_text = transcript_segment["text"]
+                segment_duration = transcript_segment["end"] - transcript_segment["start"]
+                
+                # Check for potential hallucination in transcript
+                words_per_second = len(transcript_text.split()) / segment_duration if segment_duration > 0 else 0
+                is_likely_hallucination = words_per_second < 0.5
+                
+                if not is_likely_hallucination:
+                    current_transcript_text = transcript_text
 
             # Get current description
             frame_number, timestamp, description = frame_info[current_desc_idx]
-
-            # Get current transcript segment
-            transcript_segment = transcript[current_transcript_idx]
-            transcript_text = transcript_segment["text"]
-            segment_duration = transcript_segment["end"] - transcript_segment["start"]
-
-            # Check for potential hallucination in transcript
-            words_per_second = len(transcript_text.split()) / segment_duration if segment_duration > 0 else 0
-            is_likely_hallucination = words_per_second < 0.5
 
             # Add caption using our existing logic
             height, width = frame.shape[:2]
@@ -719,15 +725,15 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             if current_line:
                 top_lines.append(' '.join(current_line))
 
-            # Add transcript as subtitle if not likely hallucination
-            bottom_lines = []
-            if not is_likely_hallucination and transcript_text.strip():
+            # If we have speech transcription, add bottom overlay
+            if current_transcript_text:  # Changed from bottom_lines check to current_transcript_text
                 # Normalize smart quotes and apostrophes in transcript
-                transcript_text = transcript_text.replace('"', '"').replace('"', '"')
-                transcript_text = transcript_text.replace("'", "'").replace("'", "'")
+                current_transcript_text = current_transcript_text.replace('"', '"').replace('"', '"')
+                current_transcript_text = current_transcript_text.replace("'", "'").replace("'", "'")
                 # Split transcript into lines
-                subtitle_words = transcript_text.split()
+                subtitle_words = current_transcript_text.split()
                 current_line = []
+                bottom_lines = []
                 
                 # Adjust font and padding based on resolution tiers
                 if height >= 1440:  # 2K and above
@@ -774,7 +780,7 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                 
             top_box_height = top_line_count * line_height + 2 * padding
             
-            # Create top overlay for frame descriptions
+            # Create overlay for text background
             overlay = frame.copy()
             cv2.rectangle(overlay, 
                          (int(margin), int(margin)),
@@ -782,10 +788,14 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                          (0, 0, 0),
                          -1)
             
-            # Draw text for top overlay
+            # Blend background overlay with original frame
+            alpha = 0.7
+            frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+            
+            # Draw text directly on frame (not on overlay) to keep it fully opaque
             y = margin + padding + line_height
             for line in top_lines:
-                cv2.putText(overlay,
+                cv2.putText(frame,
                            line,
                            (int(margin + padding), int(y)),
                            font,
@@ -813,15 +823,17 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                     bg_y1 = int(y - text_height - bg_padding)
                     bg_y2 = int(y + bg_padding)
                     
-                    # Draw background rectangle
+                    # Draw background rectangle with transparency
+                    overlay = frame.copy()
                     cv2.rectangle(overlay,
                                 (bg_x1, bg_y1),
                                 (bg_x2, bg_y2),
                                 (0, 0, 0),
                                 -1)
+                    frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
                     
-                    # Draw text
-                    cv2.putText(overlay,
+                    # Draw text directly on frame to keep it fully opaque
+                    cv2.putText(frame,
                                line,
                                (int(x), int(y)),
                                font,
@@ -830,10 +842,6 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                                1,
                                cv2.LINE_AA)
                     y += line_height * 1.5  # Increase spacing between lines
-            
-            # Blend overlay with original frame
-            alpha = 0.7
-            frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
             
             out.write(frame)
             frame_count += 1
@@ -1032,10 +1040,14 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
                          (0, 0, 0),
                          -1)
             
-            # Add text
+            # Blend overlay with original frame
+            alpha = 0.7
+            frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+            
+            # Add text directly on frame to keep it fully opaque
             y = margin + padding + line_height
             for line in lines:
-                cv2.putText(overlay,
+                cv2.putText(frame,
                            line,
                            (int(margin + padding), int(y)),
                            font,
@@ -1044,10 +1056,6 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
                            1,
                            cv2.LINE_AA)
                 y += line_height
-            
-            # Blend overlay with original frame
-            alpha = 0.7
-            frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
             
             # Convert back to PIL for gallery display
             frame_pil = Image.fromarray(frame)
