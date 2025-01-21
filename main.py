@@ -272,8 +272,7 @@ def get_synthesis_prompt(num_keyframes: int, is_long_video: bool = False) -> str
     if is_long_video:
         num_captions = max(4, num_keyframes // 4)  # 1/4 of keyframes for long videos
     else:
-        num_captions = max(4, num_keyframes // 2.4)  # Keep original ratio for short videos
-    
+        num_captions = min(100, max(12, num_keyframes // 1.5))  # Keep original ratio for short videos but cap at 100
     return f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions. You MUST follow the exact format specified below.
 
 Output Format:
