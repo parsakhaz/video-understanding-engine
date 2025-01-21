@@ -20,7 +20,6 @@ from frame_selection import process_video
 import gradio as gr
 import subprocess
 import re
-
 # Function to transcribe audio from a video file using Whisper model
 def transcribe_video(video_path):
     print(f"Loading audio model")
@@ -56,17 +55,17 @@ def transcribe_video(video_path):
     print(f"Transcribing video")
 
     try:
-    # Transcribe the audio from the video file
-    result = model.transcribe(video_path)
+        # Transcribe the audio from the video file
+        result = model.transcribe(video_path)
 
-    # Process the result to include timestamps
-    timestamped_transcript = []
-    for segment in result["segments"]:
-        timestamped_transcript.append({
-            "start": segment["start"],
-            "end": segment["end"],
-            "text": segment["text"]
-        })
+        # Process the result to include timestamps
+        timestamped_transcript = []
+        for segment in result["segments"]:
+            timestamped_transcript.append({
+                "start": segment["start"],
+                "end": segment["end"],
+                "text": segment["text"]
+            })
     except RuntimeError as e:
         print(f"Error transcribing video: {str(e)}")
         # Return empty transcript if transcription fails
@@ -76,10 +75,10 @@ def transcribe_video(video_path):
             "text": ""
         }]
     finally:
-    # Unload the model
-    del model
-    torch.cuda.empty_cache()  # If using CUDA
-    print("Audio model unloaded")
+        # Unload the model
+        del model
+        torch.cuda.empty_cache()  # If using CUDA
+        print("Audio model unloaded")
 
     return timestamped_transcript
 
@@ -355,7 +354,6 @@ def chunk_video_data(transcript: list, descriptions: list, chunk_duration: int =
         current_chunk_start = current_chunk_end
     
     return chunks
-
 def summarize_with_hosted_llm(transcript, descriptions):
     # Load environment variables from .env file
     load_dotenv()
@@ -376,7 +374,7 @@ def summarize_with_hosted_llm(transcript, descriptions):
             # Generate synthesis prompt for this chunk
             synthesis_prompt = get_synthesis_prompt(len(chunk_descriptions), is_long_video=True)
 
-    # Prepare the input for the model
+            # Prepare the input for the model
             timestamped_transcript = "\n".join([
                 f"[{segment['start']:.2f}s-{segment['end']:.2f}s] {segment['text']}"
                 for segment in chunk_transcript
@@ -425,9 +423,9 @@ def summarize_with_hosted_llm(transcript, descriptions):
     else:
         # Original logic for short videos
         synthesis_prompt = get_synthesis_prompt(len(descriptions), is_long_video=False)
-    timestamped_transcript = "\n".join([f"[{segment['start']:.2f}s-{segment['end']:.2f}s] {segment['text']}" for segment in transcript])
-    frame_descriptions = "\n".join([f"[{timestamp:.2f}s] Frame {frame}: {desc}" for frame, timestamp, desc in descriptions])
-    user_content = f"<transcript>\n{timestamped_transcript}\n</transcript>\n\n<frame_descriptions>\n{frame_descriptions}\n</frame_descriptions>"
+        timestamped_transcript = "\n".join([f"[{segment['start']:.2f}s-{segment['end']:.2f}s] {segment['text']}" for segment in transcript])
+        frame_descriptions = "\n".join([f"[{timestamp:.2f}s] Frame {frame}: {desc}" for frame, timestamp, desc in descriptions])
+        user_content = f"<transcript>\n{timestamped_transcript}\n</transcript>\n\n<frame_descriptions>\n{frame_descriptions}\n</frame_descriptions>"
         return get_llm_completion(synthesis_prompt, user_content)
 
 def get_llm_completion(prompt: str, content: str) -> str:
@@ -441,10 +439,10 @@ def get_llm_completion(prompt: str, content: str) -> str:
     
     for attempt in range(max_retries):
         try:
-    client = OpenAI(api_key=api_key)
-    completion = client.chat.completions.create(
+            client = OpenAI(api_key=api_key)
+            completion = client.chat.completions.create(
                 model="gpt-4o",  # Fixed model name
-        messages=[
+                messages=[
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": content}
                 ],
@@ -938,8 +936,8 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
         print("Using frame selection algorithm")
         frame_numbers = process_video(video_path)
     else:
-    print("Sampling every 50 frames")
-    frame_numbers = list(range(0, frame_count, 50))
+        print("Sampling every 50 frames")
+        frame_numbers = list(range(0, frame_count, 50))
 
     # Describe frames
     descriptions = describe_frames(video_path, frame_numbers)

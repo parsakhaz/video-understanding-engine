@@ -21,7 +21,7 @@ python main.py video.mp4 --frame-selection --save
 - Intelligent frame selection using CLIP embeddings and clustering
 - Audio transcription using Whisper
 - Visual scene description using Moondream2
-- Dynamic content synthesis with GPT-4o-mini/Llama
+- Dynamic content synthesis with GPT-4o/Llama
 - Interactive web interface
 - Accessible video output with captions
 
@@ -248,7 +248,7 @@ video-summarizer/
 5. **Content Synthesis**
    - Models: 
      - Local: Meta-Llama-3.1-8B-Instruct
-     - Hosted: gpt4o-mini
+     - Hosted: gpt-4o
    - Input: 
      - Timestamped transcript
      - Frame descriptions
