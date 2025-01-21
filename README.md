@@ -38,21 +38,28 @@ python main.py video.mp4 --frame-selection --save
    - Detailed descriptions for every key frame
    - Technical visual details
    - More frequent updates
+   - Timestamps included
    
 2. **Synthesis Captions** (Optional)
    - Context-aware, narrative-focused captions
    - Dynamic quantity based on video length
-   - Fewer but more meaningful transitions
+   - Automatic deduplication of close captions (< 2.5s apart)
    - Better for storytelling and overview
+   - Clean text without timestamps
 
 ### Accessibility Features
 - High contrast caption backgrounds (70% opacity)
 - Responsive font sizing
+  - Frame descriptions: Standard size
+  - Speech transcriptions: 4 sizes larger
 - Automatic text wrapping
 - Minimum readable text size
 - Caption persistence between transitions
 - Clear timestamp indicators
 - Separated visual and speech captions
+  - Frame descriptions at top
+  - Speech transcriptions centered near bottom
+  - Tight background boxes for speech transcriptions
 - Original audio track preservation
 
 ## Architecture Overview
@@ -67,28 +74,106 @@ graph TD
     D --> E[Similarity Analysis]
     E --> F[Key Frame Detection]
     F --> G[Frame Clustering]
+    G --> H[Cache Management]
     end
     
     subgraph "Audio Pipeline"
-    C --> H[Whisper Model]
-    H --> I[Timestamped Transcript]
+    C --> I[Whisper Model]
+    I --> J[Timestamped Transcript]
+    J --> K[Hallucination Detection]
     end
     
-    F --> J[Selected Frames]
-    G --> J
-    J --> K[Moondream VLM]
-    K --> L[Frame Descriptions]
+    F --> L[Selected Frames]
+    G --> L
+    L --> M[Moondream VLM]
+    M --> N[Frame Descriptions]
     
-    I --> M[Content Synthesis]
-    L --> M
+    K --> O[Content Synthesis]
+    N --> O
     
     subgraph "Summarization Pipeline"
-    M --> N{Model Selection}
-    N -->|Local| O[Llama 3.1]
-    N -->|Hosted| P[gpt4o-mini]
-    O --> Q[Final Summary]
-    P --> Q
+    O --> P{Model Selection}
+    P -->|Local| Q[Llama 3.1]
+    P -->|Hosted| R[gpt4o-mini]
+    Q --> S[XML Validation]
+    R --> S
+    S --> T[Summary + Captions]
     end
+    
+    subgraph "Video Generation"
+    T --> U[Frame Description Overlay]
+    K --> V[Speech Transcript Overlay]
+    U --> W[Video Assembly]
+    V --> W
+    A --> X[Audio Stream]
+    X --> Y[FFmpeg Merge]
+    W --> Y
+    end
+```
+
+## Process Sequence
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Main
+    participant FrameSelection
+    participant Whisper
+    participant Moondream
+    participant LLM
+    participant VideoGen
+
+    User->>Main: process_video_web(video_file)
+    activate Main
+    
+    par Frame Analysis
+        Main->>FrameSelection: process_video(video_path)
+        activate FrameSelection
+        FrameSelection->>FrameSelection: load_model()
+        FrameSelection->>FrameSelection: get_or_compute_embeddings()
+        Note over FrameSelection: Check cache first
+        FrameSelection->>FrameSelection: process_batch()
+        FrameSelection->>FrameSelection: sliding_window_filter()
+        FrameSelection->>FrameSelection: find_interesting_frames()
+        Note over FrameSelection: novelty_threshold=0.08<br/>min_skip=10<br/>n_clusters=15
+        FrameSelection-->>Main: key_frame_numbers
+        deactivate FrameSelection
+    and Audio Processing
+        Main->>Whisper: transcribe_video(video_path)
+        activate Whisper
+        Whisper-->>Main: timestamped_transcript
+        deactivate Whisper
+    end
+
+    Main->>Moondream: describe_frames(video_path, frame_numbers)
+    activate Moondream
+    Note over Moondream: Batch process (8 frames)<br/>Generate descriptions
+    Moondream-->>Main: frame_descriptions
+    deactivate Moondream
+
+    Main->>LLM: summarize_with_hosted_llm(transcript, descriptions)
+    activate LLM
+    Note over LLM: Generate summary<br/>Create synthesis captions<br/>Validate XML format
+    LLM-->>Main: synthesis_output
+    deactivate LLM
+
+    Main->>Main: parse_synthesis_output()
+    Note over Main: Extract summary<br/>Parse captions<br/>Validate format
+
+    Main->>VideoGen: create_captioned_video()
+    activate VideoGen
+    Note over VideoGen: Process frames<br/>Add overlays<br/>Handle captions
+    VideoGen->>VideoGen: Filter close captions
+    Note over VideoGen: min_time_gap=2.5s
+    VideoGen->>VideoGen: Add frame descriptions
+    VideoGen->>VideoGen: Add speech transcripts
+    Note over VideoGen: Position & style<br/>Handle hallucinations
+    VideoGen->>VideoGen: FFmpeg merge audio
+    VideoGen-->>Main: output_video_path
+    deactivate VideoGen
+
+    Main-->>User: summary, gallery, video_path
+    deactivate Main
 ```
 
 ## Directory Structure
@@ -157,6 +242,15 @@ video-summarizer/
    - Output:
      - Comprehensive video summary
      - Dynamic number of synthesized captions (1/3 of keyframes)
+   - Strict XML format with validation:
+     - Summary section with 3-5 sentences
+     - Exactly specified number of captions
+     - Each caption with [X.X] timestamp format
+     - Captions 20-50 words each
+   - Error handling:
+     - Validation of XML structure
+     - Parsing verification
+     - Fallback options on failure
    - Token limit: 4096 tokens
    - Temperature: 0.7
 
@@ -166,10 +260,13 @@ video-summarizer/
      - Frame descriptions at top of frame
        - Full descriptions or synthesized captions (user choice)
        - High-contrast background (70% opacity)
-       - Timestamp indicators
+       - Timestamp indicators (for frame descriptions only)
+       - Automatic deduplication of close captions
      - Speech transcriptions near bottom center
        - Centered text positioning
        - 15% margin from bottom
+       - Larger font size (+4 sizes)
+       - Individual background boxes per line
        - Hallucination filtering
        - Independent overlay from frame descriptions
    - Features:

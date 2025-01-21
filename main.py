@@ -386,10 +386,22 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
         print("\nUsing synthesis captions for video output...")
         # Convert synthesis captions to frame info format
         frame_info = []
-        for timestamp, text in synthesis_captions:
+        min_time_gap = 1.2  # Minimum time gap between captions in seconds
+        
+        for i, (timestamp, text) in enumerate(synthesis_captions):
+            # Skip if this caption is too close to the previous one
+            if i > 0:
+                prev_timestamp = synthesis_captions[i-1][0]
+                if timestamp - prev_timestamp < min_time_gap:
+                    # Remove the previous caption if it exists in frame_info
+                    if frame_info and frame_info[-1][1] == prev_timestamp:
+                        frame_info.pop()
+            
             # Find nearest frame number
             frame_number = int(timestamp * fps)
             frame_info.append((frame_number, timestamp, text))
+            
+        print(f"After filtering close captions: {len(frame_info)} captions remaining")
     else:
         print("\nUsing frame descriptions for video output...")
         # Use all frame descriptions
@@ -479,9 +491,12 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                 subtitle_words = transcript_text.split()
                 current_line = []
                 
+                # Larger font scale for transcripts (4 sizes bigger)
+                transcript_font_scale = min(height * 0.03 / min_line_height, 0.7) + 0.4
+                
                 for word in subtitle_words:
                     test_line = ' '.join(current_line + [word])
-                    (text_width, _), _ = cv2.getTextSize(test_line, font, font_scale, 1)
+                    (text_width, _), _ = cv2.getTextSize(test_line, font, transcript_font_scale, 1)
                     
                     if text_width <= max_width - 2 * margin:
                         current_line.append(word)
@@ -525,29 +540,37 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                 bottom_box_height = bottom_line_count * line_height + 2 * padding
                 bottom_margin = int(height * 0.15)  # Position overlay 15% from bottom
                 
-                # Create bottom overlay for speech transcription
-                cv2.rectangle(overlay,
-                            (margin, height - bottom_box_height - bottom_margin),
-                            (width - margin, height - bottom_margin),
-                            (0, 0, 0),
-                            -1)
-                
-                # Add speech transcription text (centered)
+                # Add speech transcription text (centered with tight background)
                 y = height - bottom_box_height - bottom_margin + padding + line_height
                 for line in bottom_lines:
-                    # Calculate text width for centering
-                    (text_width, _), _ = cv2.getTextSize(line, font, font_scale, 1)
+                    # Calculate text width for centering and background
+                    (text_width, text_height), _ = cv2.getTextSize(line, font, transcript_font_scale, 1)
                     x = (width - text_width) // 2  # Center the text
                     
+                    # Create tight background just for this line
+                    bg_padding = 10  # Padding around text
+                    bg_x1 = x - bg_padding
+                    bg_x2 = x + text_width + bg_padding
+                    bg_y1 = y - text_height - bg_padding
+                    bg_y2 = y + bg_padding
+                    
+                    # Draw background rectangle
+                    cv2.rectangle(overlay,
+                                (bg_x1, bg_y1),
+                                (bg_x2, bg_y2),
+                                (0, 0, 0),
+                                -1)
+                    
+                    # Draw text
                     cv2.putText(overlay,
                                line,
                                (x, y),
                                font,
-                               font_scale,
+                               transcript_font_scale,
                                (255, 255, 255),
                                1,
                                cv2.LINE_AA)
-                    y += line_height
+                    y += line_height * 1.5  # Increase spacing between lines
             
             # Blend overlay with original frame
             alpha = 0.7
