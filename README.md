@@ -209,7 +209,8 @@ video-summarizer/
    - Input: Video file
    - Output: Frame data and audio stream
    - Supported formats: MP4, AVI, MOV, MKV
-   - Maximum recommended length: 30 minutes
+   - Maximum recommended length: 6-8 minutes
+   - Automatic audio stream detection
 
 2. **Frame Selection** (when using `--frame-selection`)
    - Model: CLIP (ViT-SO400M-14-SigLIP-384)
@@ -253,18 +254,13 @@ video-summarizer/
      - Frame descriptions
    - Output:
      - Comprehensive video summary
-     - Dynamic number of synthesized captions (1/3 of keyframes)
-   - Strict XML format with validation:
-     - Summary section with 3-5 sentences
-     - Exactly specified number of captions
-     - Each caption with [X.X] timestamp format
-     - Captions 20-50 words each
-   - Error handling:
-     - Validation of XML structure
-     - Parsing verification
-     - Fallback options on failure
+     - Dynamic number of synthesized captions:
+       - Long videos (>2.5 min): 1/4 of keyframes
+       - Short videos: 2/3 of keyframes (capped at 100)
+   - Strict XML format with validation
+   - Error handling with fallback to frame descriptions
    - Token limit: 4096 tokens
-   - Temperature: 0.7
+   - Temperature: 0.3
 
 6. **Video Generation**
    - Input: Original video, descriptions, summary, transcript
@@ -291,20 +287,22 @@ video-summarizer/
      - Minimum 1.2s gap between captions
      - Automatic audio stream detection
    - Visual enhancements:
-     - ASCII-compatible text rendering
-     - Improved contrast with semi-transparent overlays
+     - Resolution-based font scaling (SD/HD/2K+)
+     - Improved contrast with semi-transparent overlays (70% opacity)
      - Centered transcript text with individual boxes
-     - Adaptive font scaling
+     - Dynamic padding and margins based on resolution
    - Robustness improvements:
      - Graceful handling of missing audio streams
      - Fallback to frame descriptions if synthesis fails
      - Smart handling of caption timing edge cases
      - Comprehensive error handling
+     - ASCII-compatible text normalization
    - Quality of life:
      - Automatic video property detection
      - Progress tracking
      - Debug logging
      - Informative status messages
+     - Web-compatible output format (h264)
 
 8. **Gallery View** (Web Interface)
    - Always shows frame descriptions (not synthesis captions)
