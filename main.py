@@ -39,7 +39,6 @@ def transcribe_video(video_path):
         has_audio = len(result.stdout.strip()) > 0
     except subprocess.CalledProcessError:
         print("Error checking audio stream")
-    
     if not has_audio:
         print("No audio track detected. Processing video with empty transcript.")
         # Return empty transcript with same structure
@@ -57,17 +56,17 @@ def transcribe_video(video_path):
     print(f"Transcribing video")
 
     try:
-        # Transcribe the audio from the video file
-        result = model.transcribe(video_path)
+    # Transcribe the audio from the video file
+    result = model.transcribe(video_path)
 
-        # Process the result to include timestamps
-        timestamped_transcript = []
-        for segment in result["segments"]:
-            timestamped_transcript.append({
-                "start": segment["start"],
-                "end": segment["end"],
-                "text": segment["text"]
-            })
+    # Process the result to include timestamps
+    timestamped_transcript = []
+    for segment in result["segments"]:
+        timestamped_transcript.append({
+            "start": segment["start"],
+            "end": segment["end"],
+            "text": segment["text"]
+        })
     except RuntimeError as e:
         print(f"Error transcribing video: {str(e)}")
         # Return empty transcript if transcription fails
@@ -77,10 +76,10 @@ def transcribe_video(video_path):
             "text": ""
         }]
     finally:
-        # Unload the model
-        del model
-        torch.cuda.empty_cache()  # If using CUDA
-        print("Audio model unloaded")
+    # Unload the model
+    del model
+    torch.cuda.empty_cache()  # If using CUDA
+    print("Audio model unloaded")
 
     return timestamped_transcript
 
@@ -267,9 +266,13 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
         json.dump(output, f, indent=2)
     print(f"Output saved to {filename}")
 
-def get_synthesis_prompt(num_keyframes: int) -> str:
+def get_synthesis_prompt(num_keyframes: int, is_long_video: bool = False) -> str:
     """Generate a dynamic synthesis prompt based on number of keyframes."""
-    num_captions = max(4, num_keyframes // 2.4)  # At least 4 captions, or 1/2.4 of keyframes
+    # For longer videos, we want fewer captions per minute to avoid overwhelming
+    if is_long_video:
+        num_captions = max(4, num_keyframes // 4)  # 1/4 of keyframes for long videos
+    else:
+        num_captions = max(4, num_keyframes // 2.4)  # Keep original ratio for short videos
     
     return f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions. You MUST follow the exact format specified below.
 
@@ -317,39 +320,145 @@ Timestamped transcript of the video
 Timestamped descriptions of key frames
 </frame_descriptions>"""
 
+def chunk_video_data(transcript: list, descriptions: list, chunk_duration: int = 60) -> list:
+    """Split video data into chunks for processing longer videos."""
+    chunks = []
+    current_chunk_start = 0
+    min_descriptions_per_chunk = 4  # Ensure at least 4 descriptions per chunk
+    
+    while current_chunk_start < descriptions[-1][1]:  # Until we reach the end timestamp
+        current_chunk_end = current_chunk_start + chunk_duration
+        
+        # Get descriptions in this time window
+        chunk_descriptions = [
+            desc for desc in descriptions 
+            if current_chunk_start <= desc[1] < current_chunk_end
+        ]
+        
+        # If chunk has too few descriptions, extend the window
+        while len(chunk_descriptions) < min_descriptions_per_chunk and current_chunk_end < descriptions[-1][1]:
+            current_chunk_end += 15  # Extend by 15 seconds (reduced from 30)
+            chunk_descriptions = [
+                desc for desc in descriptions 
+                if current_chunk_start <= desc[1] < current_chunk_end
+            ]
+        
+        # Get transcript segments in this time window
+        chunk_transcript = [
+            seg for seg in transcript
+            if (seg["start"] >= current_chunk_start and seg["start"] < current_chunk_end) or
+               (seg["end"] > current_chunk_start and seg["end"] <= current_chunk_end)
+        ]
+        
+        if chunk_descriptions:  # Only add chunk if it has descriptions
+            chunks.append((chunk_transcript, chunk_descriptions))
+        
+        current_chunk_start = current_chunk_end
+    
+    return chunks
+
 def summarize_with_hosted_llm(transcript, descriptions):
     # Load environment variables from .env file
     load_dotenv()
 
-    # Generate dynamic synthesis prompt based on number of keyframes
-    num_keyframes = len(descriptions)
-    synthesis_prompt = get_synthesis_prompt(num_keyframes)
+    # Check if this is a long video (over 2 minutes)
+    video_duration = descriptions[-1][1]  # Last frame timestamp
+    is_long_video = video_duration > 150  # 2.5 minutes threshold
+    
+    if is_long_video:
+        print("\nLong video detected. Processing in chunks...")
+        chunks = chunk_video_data(transcript, descriptions)
+        all_summaries = []
+        all_captions = []
+        
+        for i, (chunk_transcript, chunk_descriptions) in enumerate(chunks, 1):
+            print(f"\nProcessing chunk {i}/{len(chunks)}...")
+            
+            # Generate synthesis prompt for this chunk
+            synthesis_prompt = get_synthesis_prompt(len(chunk_descriptions), is_long_video=True)
 
     # Prepare the input for the model
+            timestamped_transcript = "\n".join([
+                f"[{segment['start']:.2f}s-{segment['end']:.2f}s] {segment['text']}"
+                for segment in chunk_transcript
+            ])
+            frame_descriptions = "\n".join([
+                f"[{timestamp:.2f}s] Frame {frame}: {desc}"
+                for frame, timestamp, desc in chunk_descriptions
+            ])
+            
+            user_content = f"<transcript>\n{timestamped_transcript}\n</transcript>\n\n<frame_descriptions>\n{frame_descriptions}\n</frame_descriptions>"
+            
+            # Get completion for this chunk
+            completion = get_llm_completion(synthesis_prompt, user_content)
+            chunk_summary, chunk_captions = parse_synthesis_output(completion)
+            
+            if chunk_summary and chunk_captions:
+                all_summaries.append(chunk_summary)
+                all_captions.extend(chunk_captions)
+
+        # Make a final pass to synthesize all summaries into one coherent summary
+        print("\nSynthesizing final summary...")
+        final_summary_prompt = """You are tasked with synthesizing multiple summaries from different parts of a video into one coherent, comprehensive summary. 
+        The summaries are presented in chronological order. Create a single summary that:
+        1. Captures the main narrative arc of the entire video
+        2. Highlights key themes and important elements
+        3. Maintains a clear and concise flow
+        4. Is roughly the same length as one of the input summaries
+        
+        Input Format:
+        <chunk_summaries>
+        [Chronological summaries of video segments]
+        </chunk_summaries>"""
+        
+        chunk_summaries_content = "\n\n".join([f"Chunk {i+1}:\n{summary}" for i, summary in enumerate(all_summaries)])
+        final_summary_content = f"<chunk_summaries>\n{chunk_summaries_content}\n</chunk_summaries>"
+        
+        final_summary = get_llm_completion(final_summary_prompt, final_summary_content)
+        
+        # Create final synthesis format with the new summary
+        final_output = f"<summary>\n{final_summary}\n</summary>\n\n<captions>\n"
+        for timestamp, text in sorted(all_captions, key=lambda x: x[0]):
+            final_output += f"<caption>[{timestamp:.1f}] {text}</caption>\n"
+        final_output += "</captions>"
+        
+        return final_output
+    else:
+        # Original logic for short videos
+        synthesis_prompt = get_synthesis_prompt(len(descriptions), is_long_video=False)
     timestamped_transcript = "\n".join([f"[{segment['start']:.2f}s-{segment['end']:.2f}s] {segment['text']}" for segment in transcript])
     frame_descriptions = "\n".join([f"[{timestamp:.2f}s] Frame {frame}: {desc}" for frame, timestamp, desc in descriptions])
     user_content = f"<transcript>\n{timestamped_transcript}\n</transcript>\n\n<frame_descriptions>\n{frame_descriptions}\n</frame_descriptions>"
+        return get_llm_completion(synthesis_prompt, user_content)
 
-    # Check if OPENAI_API_KEY is set
+def get_llm_completion(prompt: str, content: str) -> str:
+    """Helper function to get LLM completion with error handling."""
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("OPENAI_API_KEY environment variable is not set. Please set it in your .env file or environment.")
 
-    # Initialize the OpenAI client
+    max_retries = 3
+    retry_delay = 1
+    
+    for attempt in range(max_retries):
+        try:
     client = OpenAI(api_key=api_key)
-
-    # Create the chat completion
     completion = client.chat.completions.create(
-        model="gpt-4o-mini",
+                model="gpt-4o",  # Fixed model name
         messages=[
-            {"role": "system", "content": synthesis_prompt},
-            {"role": "user", "content": user_content}
-        ],
-        max_tokens=1024
-    )
-
-    # Extract and return the generated summary
-    return completion.choices[0].message.content.strip()
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": content}
+                ],
+                max_tokens=1024,
+                temperature=0.3
+            )
+            return completion.choices[0].message.content.strip()
+        except Exception as e:
+            if attempt == max_retries - 1:  # Last attempt
+                print(f"\nError getting LLM completion after {max_retries} attempts: {str(e)}")
+                return f"<summary>\nError generating summary: API error after {max_retries} attempts.\n</summary>\n\n<captions>\n</captions>"
+            print(f"\nRetrying LLM completion ({attempt + 1}/{max_retries})...")
+            time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
 
 def parse_synthesis_output(output: str) -> tuple:
     """Parse the synthesis output to extract summary and captions."""
@@ -676,7 +785,7 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                          (0, 0, 0),
                          -1)
             
-            # Add frame description text
+            # Draw text for top overlay
             y = margin + padding + line_height
             for line in top_lines:
                 cv2.putText(overlay,
@@ -788,8 +897,25 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
     os.remove(concat_file)
     os.remove(concat_output)
     
-    print(f"\nCaptioned video saved to: {final_output}")
-    return final_output
+    # Convert to web-compatible format (h264)
+    web_output = final_output.replace('.mp4', '_web.mp4')
+    convert_cmd = [
+        'ffmpeg', '-y',
+        '-i', final_output,
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',  # Use ultrafast preset for speed
+        '-crf', '23',           # Reasonable quality
+        '-c:a', 'aac',          # AAC audio for web compatibility
+        '-movflags', '+faststart',  # Enable fast start for web playback
+        web_output
+    ]
+    subprocess.run(convert_cmd, check=True)
+    
+    # Remove the non-web version
+    os.remove(final_output)
+    
+    print(f"\nCaptioned video saved to: {web_output}")
+    return web_output
 
 def process_video_web(video_file, use_frame_selection=False, use_synthesis_captions=False):
     """Process video through web interface."""
@@ -813,8 +939,8 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
         print("Using frame selection algorithm")
         frame_numbers = process_video(video_path)
     else:
-        print("Sampling every 50 frames")
-        frame_numbers = list(range(0, frame_count, 50))
+    print("Sampling every 50 frames")
+    frame_numbers = list(range(0, frame_count, 50))
 
     # Describe frames
     descriptions = describe_frames(video_path, frame_numbers)
