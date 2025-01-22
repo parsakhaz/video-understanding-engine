@@ -488,7 +488,7 @@ Output Format:
 
 Example format:
 <summary>
-The video shows a classroom scene where...
+This video presents a dynamic sequence of events in a classroom setting, where students and teachers interact during a typical lesson...
 </summary>
 
 <captions>
@@ -498,10 +498,11 @@ The video shows a classroom scene where...
 </captions>
 
 Requirements for Summary:
-1. Provide a clear overview of the video's main content and purpose
-2. Include key events, characters, and settings
-3. Integrate both visual and audio information
-4. Keep it concise (3-5 sentences)
+1. IMPORTANT: Always start with "This video presents" to maintain consistent style
+2. Provide a clear overview of the video's main content and purpose
+3. Include key events, characters, and settings
+4. Integrate both visual and audio information
+5. Keep it concise (3-5 sentences)
 
 Requirements for Captions:
 1. Generate exactly {num_captions} captions
@@ -721,6 +722,7 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
                     messages,
                     max_new_tokens=8000,  # Increased for longer responses
                     temperature=0.3,
+                    
                 )
                 raw_response = outputs[0]["generated_text"]
                 # Log the raw response for debugging
