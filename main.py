@@ -1455,8 +1455,8 @@ def process_folder(folder_path, args):
         video_path = os.path.join(folder_path, video_file)
         print(f"\nProcessing video {i}/{len(video_files)}: {video_file}")
         
-        # Try processing with up to 3 retries
-        max_retries = 3
+        # Try processing with up to 10 retries
+        max_retries = 10
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
