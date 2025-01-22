@@ -699,6 +699,7 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
 def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -> str:
     """Helper function to get LLM completion with error handling."""
     if use_local_llm:
+        pipeline = None
         try:
             print("\nInitializing local Llama model...")
             pipeline = transformers.pipeline(
@@ -756,17 +757,20 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
                 print("Falling back to OpenAI API...")
                 return None
             
-            # Clean up resources
-            del pipeline
-            torch.cuda.empty_cache()
-            
-            return None  # Will trigger fallback to OpenAI
-            
         except Exception as e:
             print(f"\nError with local LLM: {str(e)}")
             print("Falling back to OpenAI API...")
-            use_local_llm = False
+            return None
+            
+        finally:
+            # Clean up resources
+            if pipeline is not None:
+                del pipeline
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    print("\nCleared CUDA cache and released model resources")
     
+    # OpenAI API fallback
     if not use_local_llm:
         print("\nUsing OpenAI API...")
         api_key = os.environ.get("OPENAI_API_KEY")
