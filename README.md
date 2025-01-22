@@ -223,7 +223,7 @@ sequenceDiagram
         Main->>AudioProc: extract_audio()
         activate AudioProc
         AudioProc->>AudioProc: detect_silence()
-        Note over AudioProc: threshold=-35dB<br/>min_length=1000ms
+        Note over AudioProc: threshold=-40dB<br/>min_length=1000ms
         AudioProc->>AudioProc: trim_silence()
         AudioProc->>AudioProc: calculate_offset()
         AudioProc-->>Main: trimmed_audio, offset

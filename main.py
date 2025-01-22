@@ -25,7 +25,7 @@ from pydub.silence import detect_nonsilent
 from difflib import SequenceMatcher
 import ast
 # Function to trim silence from audio
-def trim_silence(audio_path, min_silence_len=1000, silence_thresh=-20, offset=0):
+def trim_silence(audio_path, min_silence_len=1000, silence_thresh=-55, offset=0):
     """
     Trims silence from the beginning and end of an audio file.
     
@@ -101,33 +101,18 @@ def clean_transcript(segments):
         "trademark"
     ]
     
-    # Common speech indicators that we should keep even if they violate other rules
-    speech_indicators = [
-        "says",
-        "said",
-        "asks",
-        "asked",
-        "!",
-        "?",
-        ":",
-        "\"",  # Added quotes as speech indicator
-        "'",   # Added apostrophe as speech indicator
-    ]
-    
     # First pass: Remove segments that are just noise or boilerplate
     filtered_segments = []
     for segment in segments:
         text = segment["text"].strip().lower()
         
         # Skip if just noise
-        if any(phrase in text.lower() for phrase in noise_phrases) and text not in ["music", "captions"]:
+        if any(phrase in text.lower() for phrase in noise_phrases):
             continue
             
-        # Skip if contains boilerplate phrases and no speech indicators
+        # Skip if contains multiple boilerplate phrases
         boilerplate_count = sum(1 for phrase in boilerplate_phrases if phrase in text.lower())
-        speech_indicator_count = sum(1 for indicator in speech_indicators if indicator in text)
-        
-        if boilerplate_count >= 2 and speech_indicator_count == 0:
+        if boilerplate_count >= 2:
             continue
             
         filtered_segments.append(segment)
@@ -144,38 +129,13 @@ def clean_transcript(segments):
         if any(similar(current["text"], next_seg["text"]) for next_seg in next_segments):
             continue
             
-        # Check for hallucination based on multiple criteria
-        segment_duration = current["end"] - current["start"]
-        text = current["text"].strip()
-        words = text.split()
-        words_per_second = len(words) / segment_duration if segment_duration > 0 else 0
-        
-        # Calculate text metrics
-        unique_words_ratio = len(set(words)) / len(words) if words else 0
-        has_speech_indicators = any(indicator in text for indicator in speech_indicators)
-        has_multiple_sentences = len(re.findall(r'[.!?]+', text)) > 1
-        avg_word_length = sum(len(word) for word in words) / len(words) if words else 0
-        
-        # Skip if ALL of the following are true:
-        # 1. Words per second is outside normal speech range
-        # 2. Segment is very long
-        # 3. Text is highly repetitive
-        # 4. No speech indicators present
-        # 5. Not multiple sentences
-        # 6. Average word length is suspicious
-        should_skip = (
-            (words_per_second < 0.25 or words_per_second > 7.5) and  # More lenient WPS range
-            segment_duration > 20.0 and  # Longer maximum duration
-            unique_words_ratio < 0.3 and  # More lenient repetition threshold
-            not has_speech_indicators and
-            not has_multiple_sentences and
-            (avg_word_length < 2 or avg_word_length > 15)  # Suspicious word lengths
-        )
-        
-        if not should_skip:
-            cleaned_segments.append(current)
+        cleaned_segments.append(current)
     
-    return cleaned_segments
+    return cleaned_segments if cleaned_segments else [{
+        "start": 0,
+        "end": 0,
+        "text": ""
+    }]
 
 # Function to transcribe audio from a video file using Whisper model
 def transcribe_video(video_path):
@@ -474,10 +434,10 @@ def get_synthesis_prompt(num_keyframes: int, is_long_video: bool = False) -> str
     """Generate a dynamic synthesis prompt based on number of keyframes."""
     # For longer videos, we want fewer captions per minute to avoid overwhelming
     if is_long_video:
-        # Aim for roughly 1 caption every 10-15 seconds
-        num_captions = max(12, num_keyframes // 2)  # Changed from num_keyframes // 4
+        num_captions = max(12, num_keyframes // 2)
     else:
-        num_captions = min(100, max(12, num_keyframes // 1.5))  # Keep original ratio for short videos but cap at 100
+        num_captions = min(100, max(12, num_keyframes // 1.5))
+    
     return f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions. You MUST follow the exact format specified below.
 
 Output Format:
@@ -497,11 +457,21 @@ The video presents a dynamic sequence of events in a classroom setting, where st
 ...additional captions...
 </captions>
 
+IMPORTANT RESTRICTIONS:
+1. NEVER attribute speech to specific individuals unless explicitly confirmed in the transcript
+2. NEVER assume who is speaking when describing scenes
+3. NEVER associate specific actions with named individuals unless visually obvious
+4. NEVER make assumptions about relationships or roles between people
+5. Use neutral descriptions like "a person", "someone", or "the speaker" instead of specific identifiers
+6. Only mention names if they are explicitly stated in the transcript or clearly shown in text/graphics
+7. Focus on describing what is visually apparent without making assumptions about who is doing what
+8. When in doubt, use passive voice or general descriptions rather than attributing actions
+
 Requirements for Summary:
 1. IMPORTANT: Always start with "The video presents" to maintain consistent style
 2. Provide a clear overview of the video's main content and purpose
-3. Include key events, characters, and settings
-4. Integrate both visual and audio information
+3. Include key events and settings without attributing actions to specific people
+4. Integrate both visual and audio information while avoiding assumptions
 5. Keep it concise (3-5 sentences)
 
 Requirements for Captions:
@@ -510,10 +480,10 @@ Requirements for Captions:
    - Start with a timestamp in [X.X] format
    - Use the EARLIEST timestamp where a scene or action begins
    - Be 20-50 words long
-   - Focus on key events and context
-   - Integrate both visual and audio information when relevant
+   - Focus on observable events and context
+   - Avoid attributing speech or actions unless explicitly clear
 3. Timestamps should be reasonably spaced throughout the video
-4. Focus on narrative flow and context, not just describing what's visible
+4. Focus on what is definitively shown or heard, not assumptions
 5. IMPORTANT: When multiple frames describe the same scene or action, use the EARLIEST timestamp
 
 Input sections:
@@ -636,6 +606,8 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
         4. Is roughly the same length as one of the input summaries
         5. Ends immediately after the summary (no extra text)
         6. IMPORTANT: Never refers to frames as "stills" or "images" - they are video frames from a continuous video
+        7. You must focus on observable events and context without making assumptions about who is doing what
+        8. You must use neutral language and avoids attributing actions unless explicitly clear
         
         Input Format:
         <chunk_summaries>
@@ -1061,15 +1033,7 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             transcript_segment = transcript[current_transcript_idx]
             if (current_time >= transcript_segment["start"] and 
                 current_time <= transcript_segment["end"]):
-                transcript_text = transcript_segment["text"]
-                segment_duration = transcript_segment["end"] - transcript_segment["start"]
-                
-                # Check for potential hallucination in transcript
-                words_per_second = len(transcript_text.split()) / segment_duration if segment_duration > 0 else 0
-                is_likely_hallucination = words_per_second < 0.5
-                
-                if not is_likely_hallucination:
-                    current_transcript_text = transcript_text
+                current_transcript_text = transcript_segment["text"]
 
             # Get current description
             frame_number, timestamp, description = frame_info[current_desc_idx]
