@@ -626,14 +626,16 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
 
         # Make a final pass to synthesize all summaries into one coherent summary
         print("\nSynthesizing final summary...")
-        final_summary_prompt = """You are tasked with synthesizing multiple summaries from different parts of a video into one coherent, comprehensive summary. 
-        The summaries are presented in chronological order. Output a single summary that:
-        1. IMPORTANT: Always starts with "The video presents" to maintain consistent style
-        2. Captures the main narrative arc of the entire video
-        3. Highlights key themes and important elements
-        4. Maintains a clear and concise flow
-        5. Is roughly the same length as one of the input summaries
-        6. Ends immediately after the summary (no extra text)
+        final_summary_prompt = """You are tasked with synthesizing multiple summaries from different parts of a video into one coherent, comprehensive summary of the entire video.
+        The frame and scene summaries are presented in chronological order. 
+        
+        Output a single overall summary of all the frames and scenesthat:
+        1. Always starts with "The video presents" to maintain consistent style.
+        2. Captures the main narrative arc of the entire video, inferring the most likely high level overview of the video and theme, along with emotions and feelings.
+        3. Maintains a clear and concise flow
+        4. Is roughly the same length as one of the input summaries
+        5. Ends immediately after the summary (no extra text)
+        6. IMPORTANT: Never refers to frames as "stills" or "images" - they are video frames from a continuous video
         
         Input Format:
         <chunk_summaries>
