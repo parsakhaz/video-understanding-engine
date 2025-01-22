@@ -698,80 +698,93 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
 
 def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -> str:
     """Helper function to get LLM completion with error handling."""
-    if use_local_llm:
-        pipeline = None
-        try:
-            print("\nInitializing local Llama model...")
-            pipeline = transformers.pipeline(
-                "text-generation",
-                model="meta-llama/Meta-Llama-3.1-8B-Instruct",
-                model_kwargs={"torch_dtype": torch.bfloat16},
-                device_map="auto",
-            )
-            
-            # Format messages like in the docs
-            messages = [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": content},
-            ]
-            
-            print("\nGenerating response with local model...")
-            outputs = pipeline(
-                messages,
-                max_new_tokens=8000,  # Increased for longer responses
-                temperature=0.3,
-            )
-            raw_response = outputs[0]["generated_text"]
-            
-            # Log the raw response for debugging
-            print("\nRaw local LLM response:")
-            print("=" * 80)
-            print(raw_response)
-            print("=" * 80)
-            
-            # Extract just the assistant's response
+    try:
+        if use_local_llm:
+            pipeline = None
             try:
-                # Convert the list object to a string first
-                raw_response_str = str(raw_response)
+                print("\nInitializing local Llama model...")
+                pipeline = transformers.pipeline(
+                    "text-generation",
+                    model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+                    model_kwargs={"torch_dtype": torch.bfloat16},
+                    device_map="auto",
+                )
                 
-                # Find the assistant's message content using string search
-                assistant_start = raw_response_str.find("'role': 'assistant', 'content': '") 
-                if assistant_start != -1:
-                    content_start = assistant_start + len("'role': 'assistant', 'content': '")
-                    content_end = raw_response_str.find("'}", content_start)
-                    if content_end != -1:
-                        content = raw_response_str[content_start:content_end]
-                        # Unescape the content (convert \n to actual newlines)
-                        content = content.encode().decode('unicode_escape')
-                        print("\nExtracted and unescaped content:")
-                        print("-" * 80)
-                        print(content)
-                        print("-" * 80)
-                        return content
+                # Format messages like in the docs
+                messages = [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": content},
+                ]
                 
-                print("\nNo valid assistant response found in messages")
-                return None
+                print("\nGenerating response with local model...")
+                outputs = pipeline(
+                    messages,
+                    max_new_tokens=8000,  # Increased for longer responses
+                    temperature=0.3,
+                )
+                raw_response = outputs[0]["generated_text"]
+                # Log the raw response for debugging
+                print("\nRaw local LLM response:")
+                print("=" * 80)
+                print(raw_response)
+                print("=" * 80)
                 
-            except Exception as e:
-                print(f"\nError parsing Llama response: {str(e)}")
-                print("Falling back to OpenAI API...")
-                return None
-            
-        except Exception as e:
-            print(f"\nError with local LLM: {str(e)}")
-            print("Falling back to OpenAI API...")
-            return None
-            
-        finally:
-            # Clean up resources
-            if pipeline is not None:
-                del pipeline
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    print("\nCleared CUDA cache and released model resources")
-    
-    # OpenAI API fallback
-    if not use_local_llm:
+                # Extract just the assistant's response
+                try:
+                    # Convert the list object to a string first
+                    raw_response_str = str(raw_response)
+                    
+                    # Try different quote styles and formats
+                    patterns = [
+                        "'role': 'assistant', 'content': '",
+                        '"role": "assistant", "content": "',
+                        "'role': 'assistant', 'content': \"",
+                        "role': 'assistant', 'content': '",
+                        "role\": \"assistant\", \"content\": \""
+                    ]
+                    
+                    content = None
+                    for pattern in patterns:
+                        assistant_start = raw_response_str.find(pattern)
+                        if assistant_start != -1:
+                            content_start = assistant_start + len(pattern)
+                            # Try different ending patterns
+                            for end_pattern in ["'}", '"}', "\"}", "'}]", '"}]']:
+                                content_end = raw_response_str.find(end_pattern, content_start)
+                                if content_end != -1:
+                                    content = raw_response_str[content_start:content_end]
+                                    # Unescape the content (convert \n to actual newlines)
+                                    content = content.encode().decode('unicode_escape')
+                                    print("\nExtracted and unescaped content:")
+                                    print("-" * 80)
+                                    print(content)
+                                    print("-" * 80)
+                                    return content
+                    
+                    # If we get here, try to find XML tags directly
+                    if "<summary>" in raw_response_str and "</summary>" in raw_response_str:
+                        print("\nFalling back to direct XML parsing...")
+                        return raw_response_str
+                    
+                    print("\nNo valid assistant response found in messages")
+                    print("Raw response:")
+                    print(raw_response_str)
+                    return None
+                
+                except Exception as e:
+                    print(f"\nError with local LLM: {str(e)}")
+                    print("Falling back to OpenAI API...")
+                    return None
+                    
+            finally:
+                # Clean up resources
+                if pipeline is not None:
+                    del pipeline
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        print("\nCleared CUDA cache and released model resources")
+        
+        # OpenAI API fallback
         print("\nUsing OpenAI API...")
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
@@ -803,6 +816,9 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
                     return f"<summary>\nError generating summary: API error after {max_retries} attempts.\n</summary>\n\n<captions>\n</captions>"
                 print(f"\nRetrying LLM completion ({attempt + 1}/{max_retries})...")
                 time.sleep(retry_delay * (attempt + 1))
+    except Exception as e:
+        print(f"\nUnexpected error in get_llm_completion: {str(e)}")
+        return None
 
 def parse_synthesis_output(output: str) -> tuple:
     """Parse the synthesis output to extract summary and captions."""
