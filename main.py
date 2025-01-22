@@ -1461,6 +1461,9 @@ def process_folder(folder_path, args):
             try:
                 if attempt > 0:
                     print(f"Retry attempt {attempt + 1}/{max_retries}")
+                    # Force garbage collection and clear CUDA cache before retry
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                 
                 # Process video using the web function for consistency
                 output_video_path, summary, gallery_images = process_video_web(
@@ -1481,8 +1484,7 @@ def process_folder(folder_path, args):
                 if attempt == max_retries - 1:  # Last attempt
                     print(f"Failed to process {video_file} after {max_retries} attempts")
                 else:
-                    print("Retrying...")
-                    time.sleep(5 * (attempt + 1))  # Exponential backoff
+                    print("Retrying immediately...")
 
 def main():
     parser = argparse.ArgumentParser(description="Process a video file or folder of videos.")

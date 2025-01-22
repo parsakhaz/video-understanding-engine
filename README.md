@@ -495,8 +495,7 @@ python main.py video.mp4 --save --synthesis-captions
 - Automatically processes all videos in the specified folder
 - Supports common video formats (.mp4, .avi, .mov, .mkv, .webm)
 - Shows progress (e.g., "Processing video 1/5")
-- Retries up to 3 times if a video fails
-- Uses exponential backoff between retries (5s, 10s, 15s)
+- Retries up to 10 times if a video fails
 - Continues to next video even if one fails
 - Maintains consistent output structure in `outputs/` directory
 
