@@ -488,7 +488,7 @@ Output Format:
 
 Example format:
 <summary>
-This video presents a dynamic sequence of events in a classroom setting, where students and teachers interact during a typical lesson...
+The video presents a dynamic sequence of events in a classroom setting, where students and teachers interact during a typical lesson...
 </summary>
 
 <captions>
@@ -498,7 +498,7 @@ This video presents a dynamic sequence of events in a classroom setting, where s
 </captions>
 
 Requirements for Summary:
-1. IMPORTANT: Always start with "This video presents" to maintain consistent style
+1. IMPORTANT: Always start with "The video presents" to maintain consistent style
 2. Provide a clear overview of the video's main content and purpose
 3. Include key events, characters, and settings
 4. Integrate both visual and audio information
