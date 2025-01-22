@@ -463,7 +463,7 @@ python main.py <video_path>
 
 Advanced options:
 ```bash
-python main.py <video_path> [--save] [--local] [--frame-selection] [--web]
+python main.py <video_path> [--save] [--local] [--frame-selection] [--web] [--synthesis-captions]
 ```
 
 Options explained:
@@ -471,17 +471,34 @@ Options explained:
 - `--local`: (under development, not working yet) Use local Llama model instead of hosted LLM
 - `--frame-selection`: Use CLIP-based intelligent frame selection
 - `--web`: Launch web interface (highly recommended)
+- `--synthesis-captions`: Use synthesized narrative captions (recommended for better viewing experience)
 
 Example commands:
 ```bash
-# Launch web interface (highly recommended)
+# Launch web interface (recommended for single video processing, easy to use)
 python main.py --web
 
-# Process video with all features
-python main.py video.mp4 --frame-selection --save
+# Process single video with all features
+python main.py video.mp4 --frame-selection --local --save --synthesis-captions
 
-# Quick processing with hosted LLM (not working yet)
-python main.py video.mp4 --save
+# Process all videos in a folder
+python main.py /path/to/folder
+
+# Process folder with all features
+python main.py /path/to/folder --frame-selection --local --save --synthesis-captions
+
+# Quick processing with hosted LLM and synthesis captions
+python main.py video.mp4 --save --synthesis-captions
+```
+
+**Folder Processing Features:**
+- Automatically processes all videos in the specified folder
+- Supports common video formats (.mp4, .avi, .mov, .mkv, .webm)
+- Shows progress (e.g., "Processing video 1/5")
+- Retries up to 3 times if a video fails
+- Uses exponential backoff between retries (5s, 10s, 15s)
+- Continues to next video even if one fails
+- Maintains consistent output structure in `outputs/` directory
 
 ### Local LLM Support
 Now supports Meta-Llama-3.1-8B-Instruct for local content synthesis:
@@ -617,170 +634,3 @@ Plot interpretation:
 
 1. **Out of Memory**
    - Reduce batch size in `describe_frames()`
-   - Use hosted LLM instead of local (wip)
-   - Process shorter video segments
-   - Clear GPU memory: `torch.cuda.empty_cache()`
-   - Monitor with `nvidia-smi`
-
-2. **Slow Processing**
-   - Check GPU utilization
-   - Verify CUDA installation
-   - Consider reducing frame sampling rate
-   - Use CPU fallback if needed
-   - Profile with `torch.profiler`
-
-3. **Cache Issues**
-   - Clear `embedding_cache/` if problems occur
-   - Verify disk space availability
-   - Check file permissions
-   - Validate cache integrity
-
-4. **Common Errors**
-   - `CUDA out of memory`: Reduce batch size
-   - `FFmpeg not found`: Install FFmpeg
-   - `API rate limit`: Check API key and quotas
-   - `File not found`: Check video path and permissions
-
-## Video Output Format
-
-The tool generates an MP4 video with the following structure:
-
-1. **Intro Sequence (5 seconds)**
-   - Black background
-   - Centered, wrapped summary text
-   - Larger font for readability
-
-2. **Main Video Content**
-   - Original video with overlay captions
-   - Choice of caption styles:
-     - Full frame descriptions
-     - Synthesized narrative captions
-   - Whisper transcriptions (when available)
-   - Hallucination detection for transcript filtering
-
-3. **Caption Formatting**
-   - Semi-transparent black background (70% opacity)
-   - White text with anti-aliasing
-   - Automatic text wrapping
-   - Responsive font sizing
-   - Clear timestamp indicators
-
-### Recent Updates
-
-#### Audio Processing Improvements
-- **Silence Trimming**
-  - Automatic detection and removal of leading silence
-  - Configurable silence threshold (-35 dB)
-  - Minimum silence length: 1000ms
-  - Timestamp correction to maintain video sync
-  - Uses pydub for robust audio analysis
-
-#### Caption Enhancements
-- **Transcript Display**
-  - Extended display duration (+0.15s per segment)
-  - Accurate timing with silence trimming compensation
-  - Captions only display during valid time periods
-  - Proper handling of silent gaps between segments
-
-- **Visual Improvements**
-  - 100% opaque white text for maximum readability
-  - Semi-transparent black backgrounds (70% opacity)
-  - Separate rendering passes for backgrounds and text
-  - Improved text positioning and spacing
-  - Smart quote and apostrophe normalization
-
-#### Technical Improvements
-- Proper timestamp synchronization after silence trimming
-- More robust error handling for audio processing
-- Improved temporary file cleanup
-- Better handling of videos without audio tracks
-- Enhanced memory management for large videos
-
-### Advanced Features & Limitations
-
-#### Hallucination Detection Parameters
-The system employs sophisticated hallucination detection in transcripts using multiple criteria:
-- Words per second thresholds: Flags segments with < 0.25 or > 7.5 words/second
-- Segment duration: Extra scrutiny for segments > 20.0 seconds
-- Text analysis:
-  - Unique words ratio < 0.3 indicates potential hallucination
-  - Suspicious word lengths (< 2 or > 15 characters)
-  - Speech indicator presence check
-
-#### Transcript Cleaning System
-Automatic transcript cleaning includes:
-- **Noise Filtering**:
-  - Removes common background noise phrases
-  - Filters boilerplate/disclaimer text
-  - Preserves speech indicators (e.g., "says", "asks", "!", "?", ":")
-- **Deduplication**:
-  - Removes near-duplicate segments (90% similarity threshold)
-  - Maintains chronological flow
-  - Preserves context-critical repetitions
-- **Quality Checks**:
-  - Speech rate validation
-  - Segment length analysis
-  - Context preservation rules
-
-#### Caption Timing Specifications
-Precise timing controls for optimal viewing:
-- **Predictive Display**: Shows captions 0.5s before their timestamp
-- **Gap Management**: Enforces 1.2s minimum gap between captions
-- **Duration Extensions**: Adds 0.15s to transcript segments
-- **Synchronization**: Compensates for silence trimming
-- **Edge Cases**: Smart handling of overlapping captions
-
-#### Error Recovery System
-Robust error handling and recovery mechanisms:
-- **LLM Operations**:
-  - 3 retry attempts for completions
-  - Exponential backoff between attempts
-  - Automatic fallback from local to hosted LLM
-- **Audio Processing**:
-  - Graceful handling of missing audio tracks
-  - Recovery from extraction failures
-  - Automatic format conversion fallbacks
-- **Video Processing**:
-  - Memory management recovery
-  - Temporary file cleanup on errors
-  - Incomplete processing detection
-
-#### Resolution-based Adaptations
-Dynamic UI adjustments based on video resolution:
-
-| Resolution | Font Scale Increase | Padding | Bottom Margin | Line Height |
-|------------|-------------------|----------|---------------|-------------|
-| 2K+ (≥1440p) | +0.6 | 20px | 25% height | 4% height |
-| HD (≥720p) | +0.4 | 10px | 22% height | 3% height |
-| SD (<720p) | +0.1 | 5px | 18% height | 2% height |
-
-Additional adaptations:
-- Dynamic background opacity
-- Responsive text wrapping
-- Automatic margin calculations
-- Smart caption positioning
-
-#### Video Processing Limitations
-Important constraints to consider:
-- **Maximum Recommended Length**: 6-8 minutes
-  - Longer videos may require batch processing
-  - Memory usage increases linearly with duration
-
-- **GPU Memory Requirements**:
-  - Whisper: ~5GB
-  - Moondream: ~4GB
-  - CLIP: ~2GB
-  - Local LLM (optional): ~8GB
-  - Total peak usage: ~12GB
-
-- **Processing Constraints**:
-  - Frame batch size: 8 frames
-  - Maximum captions: 100 for short videos
-  - Caption density: 1/4 of keyframes for long videos
-  - Minimum frame skip: 10 frames
-
-- **Performance Considerations**:
-  - Processing time: ~2-4x video duration
-  - Cache size: ~2MB per minute of video
-  - Memory scaling: Linear with video length
-  - CPU utilization: 30-60% during processing

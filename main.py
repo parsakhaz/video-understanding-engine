@@ -1432,13 +1432,62 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
         gallery_images
     )
 
+def process_folder(folder_path, args):
+    """Process all videos in a folder with retries."""
+    # Get list of video files
+    video_extensions = ('.mp4', '.avi', '.mov', '.mkv', '.webm')
+    video_files = [f for f in os.listdir(folder_path) 
+                  if os.path.isfile(os.path.join(folder_path, f)) 
+                  and f.lower().endswith(video_extensions)]
+    
+    if not video_files:
+        print(f"No video files found in {folder_path}")
+        return
+
+    print(f"Found {len(video_files)} video files to process")
+    
+    # Process each video with retries
+    for i, video_file in enumerate(video_files, 1):
+        video_path = os.path.join(folder_path, video_file)
+        print(f"\nProcessing video {i}/{len(video_files)}: {video_file}")
+        
+        # Try processing with up to 3 retries
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    print(f"Retry attempt {attempt + 1}/{max_retries}")
+                
+                # Process video using the web function for consistency
+                output_video_path, summary, gallery_images = process_video_web(
+                    type('VideoFile', (), {'name': video_path})(),
+                    use_frame_selection=args.frame_selection,
+                    use_synthesis_captions=args.synthesis_captions,
+                    use_local_llm=args.local
+                )
+                
+                print(f"Successfully processed {video_file}")
+                print("\nVideo Summary:")
+                print(summary)
+                print(f"\nCaptioned video saved to: {output_video_path}")
+                break  # Success, exit retry loop
+                
+            except Exception as e:
+                print(f"Error processing {video_file} (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                if attempt == max_retries - 1:  # Last attempt
+                    print(f"Failed to process {video_file} after {max_retries} attempts")
+                else:
+                    print("Retrying...")
+                    time.sleep(5 * (attempt + 1))  # Exponential backoff
+
 def main():
-    parser = argparse.ArgumentParser(description="Process a video file.")
-    parser.add_argument('video', type=str, nargs='?', help='Path to the video file')
+    parser = argparse.ArgumentParser(description="Process a video file or folder of videos.")
+    parser.add_argument('path', type=str, nargs='?', help='Path to the video file or folder')
     parser.add_argument('--save', action='store_true', help='Save output to a JSON file')
     parser.add_argument('--local', action='store_true', help='Use local Llama model for summarization')
     parser.add_argument('--frame-selection', action='store_true', help='Use CLIP-based key frame selection algorithm')
     parser.add_argument('--web', action='store_true', help='Start Gradio web interface')
+    parser.add_argument('--synthesis-captions', action='store_true', help='Use synthesized narrative captions (recommended)')
     args = parser.parse_args()
 
     if args.web:
@@ -1461,34 +1510,39 @@ def main():
             allow_flagging="never"
         )
         iface.launch()
-    elif args.video:
-        # Process video and prepare gallery output
-        print(f"Processing video: {args.video}")
-
+    elif args.path:
         start_time = time.time()
 
-        # Get frame count
-        frame_count = get_frame_count(args.video)
-        if frame_count == 0:
-            return
+        if os.path.isdir(args.path):
+            # Process folder
+            print(f"Processing folder: {args.path}")
+            process_folder(args.path, args)
+        else:
+            # Process single video
+            print(f"Processing video: {args.path}")
+            
+            # Get frame count
+            frame_count = get_frame_count(args.path)
+            if frame_count == 0:
+                return
 
-        # Process video using the web function for consistency
-        output_video_path, summary, gallery_images = process_video_web(
-            type('VideoFile', (), {'name': args.video})(),
-            use_frame_selection=args.frame_selection,
-            use_synthesis_captions=False,
-            use_local_llm=args.local  # Pass the local LLM flag
-        )
-        
-        # Print the summary and processing time
-        print("\nVideo Summary:")
-        print(summary)
+            # Process video using the web function for consistency
+            output_video_path, summary, gallery_images = process_video_web(
+                type('VideoFile', (), {'name': args.path})(),
+                use_frame_selection=args.frame_selection,
+                use_synthesis_captions=args.synthesis_captions,
+                use_local_llm=args.local
+            )
+            
+            # Print the summary and processing time
+            print("\nVideo Summary:")
+            print(summary)
 
-        total_run_time = time.time() - start_time
-        print(f"\nTotal processing time: {total_run_time:.2f} seconds")
-        print(f"\nCaptioned video saved to: {output_video_path}")
+            total_run_time = time.time() - start_time
+            print(f"\nTotal processing time: {total_run_time:.2f} seconds")
+            print(f"\nCaptioned video saved to: {output_video_path}")
     else:
-        print("Please provide a video file path or use the --web flag to start the web interface.")
+        print("Please provide a video file/folder path or use the --web flag to start the web interface.")
 
 if __name__ == "__main__":
     main()
