@@ -11,8 +11,8 @@ python main.py video.mp4
 # Run with web interface (recommended)
 python main.py --web
 
-# Run with all features enabled
-python main.py video.mp4 --frame-selection --save
+# Run with all features enabled (including local LLM)
+python main.py video.mp4 --frame-selection --local --save
 ```
 
 ## Features
@@ -21,9 +21,10 @@ python main.py video.mp4 --frame-selection --save
 - Intelligent frame selection using CLIP embeddings and clustering
 - Audio transcription using Whisper
 - Visual scene description using Moondream2
-- Dynamic content synthesis with GPT-4o/Llama
+- Dynamic content synthesis with GPT-4o/Llama 3.1
 - Interactive web interface
 - Accessible video output with captions
+- Local LLM support with Meta-Llama-3.1-8B-Instruct
 
 ### Video Output Features
 - Intelligent frame descriptions with timestamps
@@ -61,6 +62,21 @@ python main.py video.mp4 --frame-selection --save
   - Speech transcriptions centered near bottom
   - Tight background boxes for speech transcriptions
 - Original audio track preservation
+
+### Content Synthesis Options
+1. **Hosted LLM (Default)**
+   - Uses OpenAI's GPT-4o
+   - Requires API key
+   - Faster processing
+   - Higher reliability
+
+2. **Local LLM (New!)**
+   - Uses Meta-Llama-3.1-8B-Instruct
+   - No API key required
+   - Full offline operation
+   - Automatic fallback to hosted LLM
+   - ~8GB GPU memory required
+   - Compatible response format
 
 ## Architecture Overview
 
@@ -401,7 +417,14 @@ python main.py video.mp4 --frame-selection --save
 # Quick processing with hosted LLM (not working yet)
 python main.py video.mp4 --save
 
+### Local LLM Support
+Now supports Meta-Llama-3.1-8B-Instruct for local content synthesis:
+```bash
+# Run with local LLM
+python main.py video.mp4 --local
 
+# Or enable in web interface
+python main.py --web  # Then check "Use Local LLM" option
 ```
 
 ## Model Prompts
