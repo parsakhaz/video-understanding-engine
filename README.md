@@ -1,8 +1,56 @@
 # Video Summarizer
 
+> **⚠️ IMPORTANT:** This project uses Moondream2 (2025-01-09 release), CLIP, Llama 3.1 8B Instruct, and Whisper (large) via the Hugging Face Transformers library.
+
+> **💡 NOTE:** This project offers two options for content synthesis:
+> 1. OpenAI GPT-4o API (Default, recommended if you don't have access to LLama 3.1 8B Instruct yet)
+> 2. Local Meta-Llama-3.1-8B-Instruct (Recommended if you want to run everything locally, requires requesting access to the model from Meta on Hugging Face repository [here](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct))
+>
+> **⚠️ AUTHENTICATION:** When using OpenAI, make sure to set your API key in the `.env` file with the key `OPENAI_API_KEY`.
+
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Features](#features)
+  - [Core Features](#core-features)
+  - [Video Output Features](#video-output-features)
+  - [Caption Types](#caption-types)
+  - [Accessibility Features](#accessibility-features)
+  - [Content Synthesis Options](#content-synthesis-options)
+- [Architecture Overview](#architecture-overview)
+- [Process Sequence](#process-sequence)
+- [Directory Structure](#directory-structure)
+- [Process Flow](#process-flow)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Web Interface](#web-interface-recommended)
+  - [Command Line Interface](#command-line-interface)
+  - [Local LLM Support](#local-llm-support)
+- [Model Prompts](#model-prompts)
+- [Output Format](#output-format)
+- [Frame Analysis Visualization](#frame-analysis-visualization)
+- [Requirements](#requirements)
+- [Performance Considerations](#performance-considerations)
+- [Troubleshooting](#troubleshooting)
+- [Video Output Format](#video-output-format)
+- [Recent Updates](#recent-updates)
+  - [Audio Processing Improvements](#audio-processing-improvements)
+  - [Caption Enhancements](#caption-enhancements)
+  - [Technical Improvements](#technical-improvements)
+- [Advanced Features & Limitations](#advanced-features--limitations)
+  - [Hallucination Detection Parameters](#hallucination-detection-parameters)
+  - [Transcript Cleaning System](#transcript-cleaning-system)
+  - [Caption Timing Specifications](#caption-timing-specifications)
+  - [Error Recovery System](#error-recovery-system)
+  - [Resolution-based Adaptations](#resolution-based-adaptations)
+  - [Video Processing Limitations](#video-processing-limitations)
+
 A powerful video summarization tool that combines multiple AI models to provide comprehensive video understanding through audio transcription, intelligent frame selection, visual description, and content summarization.
 
 ## Quick Start
+
+Reference [Installation](#installation) for more a detailed guide on how to install the dependencies (ffmpeg, pyvips, etc) and get things running.
+
 ```bash
 # Install and run with default settings
 pip install -r requirements.txt
@@ -11,8 +59,8 @@ python main.py video.mp4
 # Run with web interface (recommended)
 python main.py --web
 
-# Run with all features enabled
-python main.py video.mp4 --frame-selection --save
+# Run with all features enabled (including local LLM)
+python main.py video.mp4 --frame-selection --local --save
 ```
 
 ## Features
@@ -21,9 +69,10 @@ python main.py video.mp4 --frame-selection --save
 - Intelligent frame selection using CLIP embeddings and clustering
 - Audio transcription using Whisper
 - Visual scene description using Moondream2
-- Dynamic content synthesis with GPT-4o/Llama
+- Dynamic content synthesis with GPT-4o/Llama 3.1
 - Interactive web interface
 - Accessible video output with captions
+- Local LLM support with Meta-Llama-3.1-8B-Instruct
 
 ### Video Output Features
 - Intelligent frame descriptions with timestamps
@@ -61,6 +110,21 @@ python main.py video.mp4 --frame-selection --save
   - Speech transcriptions centered near bottom
   - Tight background boxes for speech transcriptions
 - Original audio track preservation
+
+### Content Synthesis Options
+1. **Hosted LLM (Default)**
+   - Uses OpenAI's GPT-4o
+   - Requires API key
+   - Faster processing
+   - Higher reliability
+
+2. **Local LLM (New!)**
+   - Uses Meta-Llama-3.1-8B-Instruct
+   - No API key required
+   - Full offline operation
+   - Automatic fallback to hosted LLM
+   - ~8GB GPU memory required
+   - Compatible response format
 
 ## Architecture Overview
 
@@ -331,6 +395,7 @@ video-summarizer/
 
 ## Installation
 
+### Initial Setup
 1. Clone the repository:
    ```bash
    git clone https://github.com/yourusername/video-summarizer.git
@@ -344,16 +409,33 @@ video-summarizer/
    .\venv\Scripts\activate   # Windows
    ```
 
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+### System Dependencies
+```bash
+# Linux/Ubuntu
+sudo apt-get update
+sudo apt-get install ffmpeg libvips libvips-dev
 
-4. Environment Setup:
-   Create a `.env` file:
-   ```
-   OPENAI_API_KEY=your_api_key_here
-   ```
+# macOS with Homebrew
+brew install ffmpeg vips
+
+# Windows
+# 1. Download and install FFmpeg from https://ffmpeg.org/download.html
+# 2. Download and install libvips from https://github.com/libvips/build-win64/releases
+```
+
+### Python Dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### Moondream Setup
+For detailed setup instructions and model information, visit [docs.moondream.ai/quick-start](https://docs.moondream.ai/quick-start). The Moondream model requires specific configurations and dependencies that are documented there.
+
+### Environment Setup (if you want to use OpenAI API for frame synthesis)
+Create a `.env` file:
+```
+OPENAI_API_KEY=your_api_key_here  # Only needed if not using local LLM
+```
 
 ## Usage
 
@@ -401,7 +483,14 @@ python main.py video.mp4 --frame-selection --save
 # Quick processing with hosted LLM (not working yet)
 python main.py video.mp4 --save
 
+### Local LLM Support
+Now supports Meta-Llama-3.1-8B-Instruct for local content synthesis:
+```bash
+# Run with local LLM
+python main.py video.mp4 --local
 
+# Or enable in web interface
+python main.py --web  # Then check "Use Local LLM" option
 ```
 
 ## Model Prompts
@@ -606,3 +695,92 @@ The tool generates an MP4 video with the following structure:
 - Improved temporary file cleanup
 - Better handling of videos without audio tracks
 - Enhanced memory management for large videos
+
+### Advanced Features & Limitations
+
+#### Hallucination Detection Parameters
+The system employs sophisticated hallucination detection in transcripts using multiple criteria:
+- Words per second thresholds: Flags segments with < 0.25 or > 7.5 words/second
+- Segment duration: Extra scrutiny for segments > 20.0 seconds
+- Text analysis:
+  - Unique words ratio < 0.3 indicates potential hallucination
+  - Suspicious word lengths (< 2 or > 15 characters)
+  - Speech indicator presence check
+
+#### Transcript Cleaning System
+Automatic transcript cleaning includes:
+- **Noise Filtering**:
+  - Removes common background noise phrases
+  - Filters boilerplate/disclaimer text
+  - Preserves speech indicators (e.g., "says", "asks", "!", "?", ":")
+- **Deduplication**:
+  - Removes near-duplicate segments (90% similarity threshold)
+  - Maintains chronological flow
+  - Preserves context-critical repetitions
+- **Quality Checks**:
+  - Speech rate validation
+  - Segment length analysis
+  - Context preservation rules
+
+#### Caption Timing Specifications
+Precise timing controls for optimal viewing:
+- **Predictive Display**: Shows captions 0.5s before their timestamp
+- **Gap Management**: Enforces 1.2s minimum gap between captions
+- **Duration Extensions**: Adds 0.15s to transcript segments
+- **Synchronization**: Compensates for silence trimming
+- **Edge Cases**: Smart handling of overlapping captions
+
+#### Error Recovery System
+Robust error handling and recovery mechanisms:
+- **LLM Operations**:
+  - 3 retry attempts for completions
+  - Exponential backoff between attempts
+  - Automatic fallback from local to hosted LLM
+- **Audio Processing**:
+  - Graceful handling of missing audio tracks
+  - Recovery from extraction failures
+  - Automatic format conversion fallbacks
+- **Video Processing**:
+  - Memory management recovery
+  - Temporary file cleanup on errors
+  - Incomplete processing detection
+
+#### Resolution-based Adaptations
+Dynamic UI adjustments based on video resolution:
+
+| Resolution | Font Scale Increase | Padding | Bottom Margin | Line Height |
+|------------|-------------------|----------|---------------|-------------|
+| 2K+ (≥1440p) | +0.6 | 20px | 25% height | 4% height |
+| HD (≥720p) | +0.4 | 10px | 22% height | 3% height |
+| SD (<720p) | +0.1 | 5px | 18% height | 2% height |
+
+Additional adaptations:
+- Dynamic background opacity
+- Responsive text wrapping
+- Automatic margin calculations
+- Smart caption positioning
+
+#### Video Processing Limitations
+Important constraints to consider:
+- **Maximum Recommended Length**: 6-8 minutes
+  - Longer videos may require batch processing
+  - Memory usage increases linearly with duration
+
+- **GPU Memory Requirements**:
+  - Whisper: ~5GB
+  - Moondream: ~4GB
+  - CLIP: ~2GB
+  - Local LLM (optional): ~8GB
+  - Total peak usage: ~12GB
+
+- **Processing Constraints**:
+  - Frame batch size: 8 frames
+  - Maximum captions: 100 for short videos
+  - Caption density: 1/4 of keyframes for long videos
+  - Minimum frame skip: 10 frames
+
+- **Performance Considerations**:
+  - Processing time: ~2-4x video duration
+  - Cache size: ~2MB per minute of video
+  - Memory scaling: Linear with video length
+  - CPU utilization: 30-60% during processing

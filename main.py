@@ -23,8 +23,9 @@ import re
 from pydub import AudioSegment
 from pydub.silence import detect_nonsilent
 from difflib import SequenceMatcher
+import ast
 # Function to trim silence from audio
-def trim_silence(audio_path, min_silence_len=1000, silence_thresh=-35, offset=0):
+def trim_silence(audio_path, min_silence_len=1000, silence_thresh=-20, offset=0):
     """
     Trims silence from the beginning and end of an audio file.
     
@@ -473,7 +474,8 @@ def get_synthesis_prompt(num_keyframes: int, is_long_video: bool = False) -> str
     """Generate a dynamic synthesis prompt based on number of keyframes."""
     # For longer videos, we want fewer captions per minute to avoid overwhelming
     if is_long_video:
-        num_captions = max(4, num_keyframes // 4)  # 1/4 of keyframes for long videos
+        # Aim for roughly 1 caption every 10-15 seconds
+        num_captions = max(12, num_keyframes // 2)  # Changed from num_keyframes // 4
     else:
         num_captions = min(100, max(12, num_keyframes // 1.5))  # Keep original ratio for short videos but cap at 100
     return f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions. You MUST follow the exact format specified below.
@@ -482,7 +484,7 @@ Output Format:
 1. A summary section wrapped in <summary></summary> tags
 2. A captions section wrapped in <captions></captions> tags
 3. Exactly {num_captions} individual captions, each wrapped in <caption></caption> tags
-4. Each caption MUST start with a timestamp in seconds in square brackets, e.g. [2.5]
+4. Each caption MUST start with a timestamp in square brackets, e.g. [2.5]
 
 Example format:
 <summary>
@@ -558,7 +560,7 @@ def chunk_video_data(transcript: list, descriptions: list, chunk_duration: int =
         current_chunk_start = current_chunk_end
     
     return chunks
-def summarize_with_hosted_llm(transcript, descriptions):
+def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
     # Load environment variables from .env file
     load_dotenv()
 
@@ -593,7 +595,20 @@ def summarize_with_hosted_llm(transcript, descriptions):
             # Get completion for this chunk with retries
             max_retries = 3
             for attempt in range(max_retries):
-                completion = get_llm_completion(synthesis_prompt, user_content)
+                print(f"\nAttempt {attempt + 1}/{max_retries} to get completion...")
+                completion = get_llm_completion(synthesis_prompt, user_content, use_local_llm=use_local_llm)
+                
+                if completion is None:
+                    print(f"Got None completion on attempt {attempt + 1}")
+                    if attempt < max_retries - 1:
+                        print("Retrying...")
+                        time.sleep(2 * (attempt + 1))
+                        continue
+                    else:
+                        print("Failed all attempts to get completion")
+                        return None
+                
+                print("\nGot completion, attempting to parse...")
                 chunk_summary, chunk_captions = parse_synthesis_output(completion)
                 
                 if chunk_summary and chunk_captions:
@@ -627,7 +642,8 @@ def summarize_with_hosted_llm(transcript, descriptions):
         
         # Get final summary with retries
         for attempt in range(max_retries):
-            final_summary = get_llm_completion(final_summary_prompt, final_summary_content)
+            print(f"\nAttempt {attempt + 1}/{max_retries} to get final summary...")
+            final_summary = get_llm_completion(final_summary_prompt, final_summary_content, use_local_llm=use_local_llm)
             if final_summary:
                 break
             elif attempt < max_retries - 1:
@@ -635,7 +651,7 @@ def summarize_with_hosted_llm(transcript, descriptions):
                 time.sleep(2 * (attempt + 1))
             else:
                 print("\nFailed to generate final summary after multiple attempts.")
-                return None, None
+                return None
         
         # Create final synthesis format with the new summary
         final_output = f"<summary>\n{final_summary}\n</summary>\n\n<captions>\n"
@@ -653,7 +669,20 @@ def summarize_with_hosted_llm(transcript, descriptions):
         
         max_retries = 3
         for attempt in range(max_retries):
-            completion = get_llm_completion(synthesis_prompt, user_content)
+            print(f"\nAttempt {attempt + 1}/{max_retries} to get completion...")
+            completion = get_llm_completion(synthesis_prompt, user_content, use_local_llm=use_local_llm)
+            
+            if completion is None:
+                print(f"Got None completion on attempt {attempt + 1}")
+                if attempt < max_retries - 1:
+                    print("Retrying...")
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                else:
+                    print("Failed all attempts to get completion")
+                    return None
+            
+            print("\nGot completion, attempting to parse...")
             summary, captions = parse_synthesis_output(completion)
             
             if summary and captions:
@@ -667,65 +696,159 @@ def summarize_with_hosted_llm(transcript, descriptions):
                     print("Falling back to frame descriptions.")
                     return None
 
-def get_llm_completion(prompt: str, content: str) -> str:
+def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -> str:
     """Helper function to get LLM completion with error handling."""
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY environment variable is not set. Please set it in your .env file or environment.")
-
-    max_retries = 3
-    retry_delay = 1
-    
-    for attempt in range(max_retries):
+    if use_local_llm:
         try:
-            client = OpenAI(api_key=api_key)
-            completion = client.chat.completions.create(
-                model="gpt-4o",  # Fixed model name
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": content}
-                ],
-                temperature=0.3
+            print("\nInitializing local Llama model...")
+            pipeline = transformers.pipeline(
+                "text-generation",
+                model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+                model_kwargs={"torch_dtype": torch.bfloat16},
+                device_map="auto",
             )
-            return completion.choices[0].message.content.strip()
+            
+            # Format messages like in the docs
+            messages = [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": content},
+            ]
+            
+            print("\nGenerating response with local model...")
+            outputs = pipeline(
+                messages,
+                max_new_tokens=8000,  # Increased for longer responses
+                temperature=0.3,
+            )
+            raw_response = outputs[0]["generated_text"]
+            
+            # Log the raw response for debugging
+            print("\nRaw local LLM response:")
+            print("=" * 80)
+            print(raw_response)
+            print("=" * 80)
+            
+            # Extract just the assistant's response
+            try:
+                # Convert the list object to a string first
+                raw_response_str = str(raw_response)
+                
+                # Find the assistant's message content using string search
+                assistant_start = raw_response_str.find("'role': 'assistant', 'content': '") 
+                if assistant_start != -1:
+                    content_start = assistant_start + len("'role': 'assistant', 'content': '")
+                    content_end = raw_response_str.find("'}", content_start)
+                    if content_end != -1:
+                        content = raw_response_str[content_start:content_end]
+                        # Unescape the content (convert \n to actual newlines)
+                        content = content.encode().decode('unicode_escape')
+                        print("\nExtracted and unescaped content:")
+                        print("-" * 80)
+                        print(content)
+                        print("-" * 80)
+                        return content
+                
+                print("\nNo valid assistant response found in messages")
+                return None
+                
+            except Exception as e:
+                print(f"\nError parsing Llama response: {str(e)}")
+                print("Falling back to OpenAI API...")
+                return None
+            
+            # Clean up resources
+            del pipeline
+            torch.cuda.empty_cache()
+            
+            return None  # Will trigger fallback to OpenAI
+            
         except Exception as e:
-            if attempt == max_retries - 1:  # Last attempt
-                print(f"\nError getting LLM completion after {max_retries} attempts: {str(e)}")
-                return f"<summary>\nError generating summary: API error after {max_retries} attempts.\n</summary>\n\n<captions>\n</captions>"
-            print(f"\nRetrying LLM completion ({attempt + 1}/{max_retries})...")
-            time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+            print(f"\nError with local LLM: {str(e)}")
+            print("Falling back to OpenAI API...")
+            use_local_llm = False
+    
+    if not use_local_llm:
+        print("\nUsing OpenAI API...")
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is not set. Please set it in your .env file or environment.")
+
+        max_retries = 3
+        retry_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                client = OpenAI(api_key=api_key)
+                completion = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": content}
+                    ],
+                    temperature=0.3
+                )
+                response = completion.choices[0].message.content.strip()
+                print("\nRaw OpenAI response:")
+                print("-" * 80)
+                print(response)
+                print("-" * 80)
+                return response
+            except Exception as e:
+                if attempt == max_retries - 1:  # Last attempt
+                    print(f"\nError getting LLM completion after {max_retries} attempts: {str(e)}")
+                    return f"<summary>\nError generating summary: API error after {max_retries} attempts.\n</summary>\n\n<captions>\n</captions>"
+                print(f"\nRetrying LLM completion ({attempt + 1}/{max_retries})...")
+                time.sleep(retry_delay * (attempt + 1))
 
 def parse_synthesis_output(output: str) -> tuple:
     """Parse the synthesis output to extract summary and captions."""
     try:
+        print("\nParsing synthesis output...")
+        
         # Extract summary (required)
         summary_match = re.search(r'<summary>(.*?)</summary>', output, re.DOTALL)
         if not summary_match:
+            print("\nFailed to find <summary> tags in output")
             raise ValueError("No summary found in synthesis output")
         summary = summary_match.group(1).strip()
+        print("\nFound summary:", summary[:100] + "..." if len(summary) > 100 else summary)
         
         # Extract captions (required)
         captions_match = re.search(r'<captions>(.*?)</captions>', output, re.DOTALL)
         if not captions_match:
+            print("\nFailed to find <captions> tags in output")
             raise ValueError("No captions found in synthesis output")
         
         captions_text = captions_match.group(1).strip()
-        caption_matches = re.finditer(r'<caption>\s*\[(\d+\.?\d*)\](.*?)</caption>', captions_text, re.DOTALL)
+        # Extract all caption tags from within the captions section
+        caption_matches = re.findall(r'<caption>\[([\d.]+)s?\](.*?)</caption>', captions_text, re.DOTALL)
         
         caption_list = []
-        for match in caption_matches:
-            timestamp = float(match.group(1))
-            text = match.group(2).strip()
-            if text:  # Only add if we have actual text
-                caption_list.append((timestamp, text))
+        for timestamp_str, text in caption_matches:
+            try:
+                timestamp = float(timestamp_str)
+                text = text.strip()
+                if text:  # Only add if we have actual text
+                    caption_list.append((timestamp, text))
+            except ValueError as e:
+                print(f"Warning: Could not parse timestamp {timestamp_str}: {e}")
+                continue
         
         if not caption_list:
+            print("\nNo valid captions found in parsed output")
             raise ValueError("No valid captions found in synthesis output")
+            
+        print(f"\nSuccessfully parsed {len(caption_list)} captions")
+        print("First caption:", caption_list[0] if caption_list else "None")
+        print("Last caption:", caption_list[-1] if caption_list else "None")
         
         return summary, caption_list
     except (ValueError, AttributeError) as e:
         print(f"\nError parsing synthesis output: {str(e)}")
-        print("Raw output:", output)
+        print("\nRaw output:")
+        print("-" * 80)
+        print(output)
+        print("-" * 80)
         return None, None
 
 def create_summary_clip(summary: str, width: int, height: int, fps: int) -> str:
@@ -1161,11 +1284,12 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
     print(f"\nCaptioned video saved to: {web_output}")
     return web_output
 
-def process_video_web(video_file, use_frame_selection=False, use_synthesis_captions=False):
+def process_video_web(video_file, use_frame_selection=False, use_synthesis_captions=False, use_local_llm=False):
     """Process video through web interface."""
     video_path = video_file.name
     print(f"Processing video: {video_path}")
-    print(f"Using synthesis captions: {use_synthesis_captions}")  # Debug print
+    print(f"Using synthesis captions: {use_synthesis_captions}")
+    print(f"Using local LLM: {use_local_llm}")
 
     start_time = time.time()
 
@@ -1192,7 +1316,7 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
 
     # Generate summary and captions
     print("Generating video summary...")
-    synthesis_output = summarize_with_hosted_llm(transcript, descriptions)
+    synthesis_output = summarize_with_hosted_llm(transcript, descriptions, use_local_llm=use_local_llm)
     summary, synthesis_captions = parse_synthesis_output(synthesis_output)
     
     if use_synthesis_captions and (synthesis_captions is None or len(synthesis_captions) == 0):
@@ -1324,7 +1448,8 @@ def main():
             inputs=[
                 gr.File(label="Upload Video"),
                 gr.Checkbox(label="Use Frame Selection", value=True, info="Recommended: Intelligently selects key frames"),
-                gr.Checkbox(label="Use Synthesis Captions (fewer, more contextual)", value=True, info="Recommended: Creates a more pleasant viewing experience")
+                gr.Checkbox(label="Use Synthesis Captions", value=True, info="Recommended: Creates a more pleasant viewing experience"),
+                gr.Checkbox(label="Use Local LLM", value=True, info="Use local Llama model instead of OpenAI API (requires model weights)")
             ],
             outputs=[
                 gr.Video(label="Captioned Video"),
@@ -1332,7 +1457,7 @@ def main():
                 gr.Gallery(label="Analyzed Frames")
             ],
             title="Video Summarizer",
-            description="Upload a video to get a summary and view analyzed frames. Both Frame Selection and Synthesis Captions are recommended for the best results.",
+            description="Upload a video to get a summary and view analyzed frames.",
             allow_flagging="never"
         )
         iface.launch()
@@ -1351,7 +1476,8 @@ def main():
         output_video_path, summary, gallery_images = process_video_web(
             type('VideoFile', (), {'name': args.video})(),
             use_frame_selection=args.frame_selection,
-            use_synthesis_captions=False  # Default to all captions in CLI mode
+            use_synthesis_captions=False,
+            use_local_llm=args.local  # Pass the local LLM flag
         )
         
         # Print the summary and processing time
