@@ -48,6 +48,9 @@
 A powerful video summarization tool that combines multiple AI models to provide comprehensive video understanding through audio transcription, intelligent frame selection, visual description, and content summarization.
 
 ## Quick Start
+
+Reference [Installation](#installation) for more a detailed guide on how to install the dependencies (ffmpeg, pyvips, etc) and get things running.
+
 ```bash
 # Install and run with default settings
 pip install -r requirements.txt
