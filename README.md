@@ -272,7 +272,7 @@ sequenceDiagram
 
 ## Directory Structure
 ```
-video-summarizer/
+video-understanding-engine/
 ├── main.py              # Main entry point
 ├── frame_selection.py   # CLIP-based frame selection
 ├── requirements.txt     # Dependencies
@@ -398,8 +398,8 @@ video-summarizer/
 ### Initial Setup
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/video-summarizer.git
-   cd video-summarizer
+   git clone https://github.com/yourusername/video-understanding-engine.git
+   cd video-understanding-engine
    ```
 
 2. Create a virtual environment (recommended):
