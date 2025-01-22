@@ -392,6 +392,7 @@ video-summarizer/
 
 ## Installation
 
+### Initial Setup
 1. Clone the repository:
    ```bash
    git clone https://github.com/yourusername/video-summarizer.git
@@ -405,16 +406,33 @@ video-summarizer/
    .\venv\Scripts\activate   # Windows
    ```
 
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+### System Dependencies
+```bash
+# Linux/Ubuntu
+sudo apt-get update
+sudo apt-get install ffmpeg libvips libvips-dev
 
-4. Environment Setup:
-   Create a `.env` file:
-   ```
-   OPENAI_API_KEY=your_api_key_here
-   ```
+# macOS with Homebrew
+brew install ffmpeg vips
+
+# Windows
+# 1. Download and install FFmpeg from https://ffmpeg.org/download.html
+# 2. Download and install libvips from https://github.com/libvips/build-win64/releases
+```
+
+### Python Dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### Moondream Setup
+For detailed setup instructions and model information, visit [docs.moondream.ai/quick-start](https://docs.moondream.ai/quick-start). The Moondream model requires specific configurations and dependencies that are documented there.
+
+### Environment Setup (if you want to use OpenAI API for frame synthesis)
+Create a `.env` file:
+```
+OPENAI_API_KEY=your_api_key_here  # Only needed if not using local LLM
+```
 
 ## Usage
 
