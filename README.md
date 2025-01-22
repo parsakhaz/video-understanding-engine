@@ -1,5 +1,50 @@
 # Video Summarizer
 
+> **⚠️ IMPORTANT:** This project uses Moondream2 (2025-01-09 release), CLIP, Llama 3.1 8B Instruct, and Whisper (large) via the Hugging Face Transformers library.
+
+> **💡 NOTE:** This project offers two options for content synthesis:
+> 1. OpenAI GPT-4o API (Default, recommended if you don't have access to LLama 3.1 8B Instruct yet)
+> 2. Local Meta-Llama-3.1-8B-Instruct (Recommended if you want to run everything locally, requires requesting access to the model from Meta on Hugging Face repository [here](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct))
+>
+> **⚠️ AUTHENTICATION:** When using OpenAI, make sure to set your API key in the `.env` file with the key `OPENAI_API_KEY`.
+
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Features](#features)
+  - [Core Features](#core-features)
+  - [Video Output Features](#video-output-features)
+  - [Caption Types](#caption-types)
+  - [Accessibility Features](#accessibility-features)
+  - [Content Synthesis Options](#content-synthesis-options)
+- [Architecture Overview](#architecture-overview)
+- [Process Sequence](#process-sequence)
+- [Directory Structure](#directory-structure)
+- [Process Flow](#process-flow)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Web Interface](#web-interface-recommended)
+  - [Command Line Interface](#command-line-interface)
+  - [Local LLM Support](#local-llm-support)
+- [Model Prompts](#model-prompts)
+- [Output Format](#output-format)
+- [Frame Analysis Visualization](#frame-analysis-visualization)
+- [Requirements](#requirements)
+- [Performance Considerations](#performance-considerations)
+- [Troubleshooting](#troubleshooting)
+- [Video Output Format](#video-output-format)
+- [Recent Updates](#recent-updates)
+  - [Audio Processing Improvements](#audio-processing-improvements)
+  - [Caption Enhancements](#caption-enhancements)
+  - [Technical Improvements](#technical-improvements)
+- [Advanced Features & Limitations](#advanced-features--limitations)
+  - [Hallucination Detection Parameters](#hallucination-detection-parameters)
+  - [Transcript Cleaning System](#transcript-cleaning-system)
+  - [Caption Timing Specifications](#caption-timing-specifications)
+  - [Error Recovery System](#error-recovery-system)
+  - [Resolution-based Adaptations](#resolution-based-adaptations)
+  - [Video Processing Limitations](#video-processing-limitations)
+
 A powerful video summarization tool that combines multiple AI models to provide comprehensive video understanding through audio transcription, intelligent frame selection, visual description, and content summarization.
 
 ## Quick Start
@@ -629,3 +674,92 @@ The tool generates an MP4 video with the following structure:
 - Improved temporary file cleanup
 - Better handling of videos without audio tracks
 - Enhanced memory management for large videos
+
+### Advanced Features & Limitations
+
+#### Hallucination Detection Parameters
+The system employs sophisticated hallucination detection in transcripts using multiple criteria:
+- Words per second thresholds: Flags segments with < 0.25 or > 7.5 words/second
+- Segment duration: Extra scrutiny for segments > 20.0 seconds
+- Text analysis:
+  - Unique words ratio < 0.3 indicates potential hallucination
+  - Suspicious word lengths (< 2 or > 15 characters)
+  - Speech indicator presence check
+
+#### Transcript Cleaning System
+Automatic transcript cleaning includes:
+- **Noise Filtering**:
+  - Removes common background noise phrases
+  - Filters boilerplate/disclaimer text
+  - Preserves speech indicators (e.g., "says", "asks", "!", "?", ":")
+- **Deduplication**:
+  - Removes near-duplicate segments (90% similarity threshold)
+  - Maintains chronological flow
+  - Preserves context-critical repetitions
+- **Quality Checks**:
+  - Speech rate validation
+  - Segment length analysis
+  - Context preservation rules
+
+#### Caption Timing Specifications
+Precise timing controls for optimal viewing:
+- **Predictive Display**: Shows captions 0.5s before their timestamp
+- **Gap Management**: Enforces 1.2s minimum gap between captions
+- **Duration Extensions**: Adds 0.15s to transcript segments
+- **Synchronization**: Compensates for silence trimming
+- **Edge Cases**: Smart handling of overlapping captions
+
+#### Error Recovery System
+Robust error handling and recovery mechanisms:
+- **LLM Operations**:
+  - 3 retry attempts for completions
+  - Exponential backoff between attempts
+  - Automatic fallback from local to hosted LLM
+- **Audio Processing**:
+  - Graceful handling of missing audio tracks
+  - Recovery from extraction failures
+  - Automatic format conversion fallbacks
+- **Video Processing**:
+  - Memory management recovery
+  - Temporary file cleanup on errors
+  - Incomplete processing detection
+
+#### Resolution-based Adaptations
+Dynamic UI adjustments based on video resolution:
+
+| Resolution | Font Scale Increase | Padding | Bottom Margin | Line Height |
+|------------|-------------------|----------|---------------|-------------|
+| 2K+ (≥1440p) | +0.6 | 20px | 25% height | 4% height |
+| HD (≥720p) | +0.4 | 10px | 22% height | 3% height |
+| SD (<720p) | +0.1 | 5px | 18% height | 2% height |
+
+Additional adaptations:
+- Dynamic background opacity
+- Responsive text wrapping
+- Automatic margin calculations
+- Smart caption positioning
+
+#### Video Processing Limitations
+Important constraints to consider:
+- **Maximum Recommended Length**: 6-8 minutes
+  - Longer videos may require batch processing
+  - Memory usage increases linearly with duration
+
+- **GPU Memory Requirements**:
+  - Whisper: ~5GB
+  - Moondream: ~4GB
+  - CLIP: ~2GB
+  - Local LLM (optional): ~8GB
+  - Total peak usage: ~12GB
+
+- **Processing Constraints**:
+  - Frame batch size: 8 frames
+  - Maximum captions: 100 for short videos
+  - Caption density: 1/4 of keyframes for long videos
+  - Minimum frame skip: 10 frames
+
+- **Performance Considerations**:
+  - Processing time: ~2-4x video duration
+  - Cache size: ~2MB per minute of video
+  - Memory scaling: Linear with video length
+  - CPU utilization: 30-60% during processing

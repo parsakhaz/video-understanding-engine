@@ -1448,7 +1448,7 @@ def main():
                 gr.File(label="Upload Video"),
                 gr.Checkbox(label="Use Frame Selection", value=True, info="Recommended: Intelligently selects key frames"),
                 gr.Checkbox(label="Use Synthesis Captions", value=True, info="Recommended: Creates a more pleasant viewing experience"),
-                gr.Checkbox(label="Use Local LLM", value=False, info="Use local Llama model instead of OpenAI API (requires model weights)")
+                gr.Checkbox(label="Use Local LLM", value=True, info="Use local Llama model instead of OpenAI API (requires model weights)")
             ],
             outputs=[
                 gr.Video(label="Captioned Video"),
