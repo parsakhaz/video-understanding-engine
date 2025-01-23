@@ -388,7 +388,7 @@ def get_frame_count(video_path):
     print(f"Total frames: {frame_count}")
     return frame_count
 
-def save_output(video_path, frame_count, transcript, descriptions, summary, total_run_time):
+def save_output(video_path, frame_count, transcript, descriptions, summary, total_run_time, synthesis_output=None, synthesis_captions=None):
     os.makedirs('logs', exist_ok=True)
     timestamp = datetime.now().isoformat().replace(':', '-')
     video_name = os.path.splitext(os.path.basename(video_path))[0]
@@ -411,40 +411,76 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
             } for frame, timestamp, desc in descriptions
         ],
         "summary": summary,
-        "total_run_time": total_run_time
+        "total_run_time": total_run_time,
+        "synthesis": {
+            "raw_output": synthesis_output,
+            "captions": [
+                {
+                    "timestamp": timestamp,
+                    "text": text
+                } for timestamp, text in (synthesis_captions or [])
+            ]
+        }
     }
 
     with open(filename, 'w') as f:
         json.dump(output, f, indent=2)
     print(f"Output saved to {filename}")
 
-def get_synthesis_prompt(num_keyframes: int, is_long_video: bool = False) -> str:
-    """Generate a dynamic synthesis prompt based on number of keyframes."""
+def get_synthesis_prompt(num_keyframes: int, video_duration: float) -> str:
+    """Generate a dynamic synthesis prompt based on number of keyframes and actual video duration."""
+    print("\n=== Caption Calculation Logic ===")
+    print(f"Input: {num_keyframes} keyframes, {video_duration:.1f}s duration")
+    
     # For longer videos, we want fewer captions per minute to avoid overwhelming
-    if is_long_video:  # > 150s
-        num_captions = max(12, num_keyframes // 2)
+    if video_duration > 150:  # > 150s
+        print("Long video detected (>150s)")
+        num_captions = max(15, num_keyframes // 2)
+        print(f"Long video calculation: max(12, {num_keyframes} // 2) = {num_captions}")
+    elif video_duration > 90:  # 90-150s
+        print("Medium-long video detected (90-150s)")
+        # For medium-long videos, increase caption count by ~25%
+        base_captions = int(video_duration / 6)  # One caption every 6 seconds
+        num_captions = min(int(base_captions * 1.25), num_keyframes // 2)
+        num_captions = max(9, num_captions)  # Ensure at least 9 captions
+        print(f"Medium-long video calculation:")
+        print(f"- Base captions (1/6s): {base_captions}")
+        print(f"- After 25% increase: {int(base_captions * 1.25)}")
+        print(f"- Final (min 15, max {num_keyframes//2}): {num_captions}")
     else:
-        # Estimate video duration from keyframes (assuming 30fps)
-        video_duration = num_keyframes / 30
-        
         if video_duration < 30:  # Short videos < 30s
+            print("Short video detected (<30s)")
             # For short videos, aim for ~3.5s per caption
             target_captions = int(video_duration / 3.5)  # One caption every 3.5 seconds
             num_captions = min(100, max(4, target_captions))
-        else:  # Medium videos 30-150s
-            # For medium videos, scale caption interval from 5s to 8s
-            # Start with 1 caption every 5s at 30s, increase to 1 every 8s at 150s
-            caption_interval = 5.0 + (video_duration - 30) * (8.0 - 5.0) / (150 - 30)
+            print(f"Short video calculation:")
+            print(f"- Target: {video_duration:.1f}s / 3.5s = {target_captions}")
+            print(f"- Final: min(100, max(4, {target_captions})) = {num_captions}")
+        else:  # Medium videos 30-90s
+            print("Medium video detected (30-90s)")
+            # For medium videos, aim for captions every 5-7 seconds
+            # Scale from 5s at 30s to 7s at 90s
+            caption_interval = 5.0 + (video_duration - 30) * (7.0 - 5.0) / (90 - 30)
             target_captions = int(video_duration / caption_interval)
             # Add a soft cap based on keyframe density
             max_captions = min(int(video_duration / 4), num_keyframes // 3)
             num_captions = min(target_captions, max_captions)
-            num_captions = max(8, num_captions)  # Ensure at least 8 captions for medium videos
+            num_captions = max(8, num_captions)  # Ensure at least 8 captions
+            print(f"Medium video calculation:")
+            print(f"- Caption interval: {caption_interval:.1f}s")
+            print(f"- Initial target: {video_duration:.1f}s / {caption_interval:.1f}s = {target_captions}")
+            print(f"- Max captions: min({video_duration:.1f}/4, {num_keyframes}/3) = {max_captions}")
+            print(f"- After max cap: min({target_captions}, {max_captions}) = {min(target_captions, max_captions)}")
+            print(f"- Final (after min 8): {num_captions}")
+    
+    print(f"Final decision: {num_captions} captions for {video_duration:.1f}s video ({num_captions/video_duration:.1f} captions/second)")
+    print("================================\n")
     
     return f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions. You MUST follow the exact format specified below.
 
 Output Format:
-1. A summary section wrapped in <summary></summary> tags
+1. A summary section wrapped in <summary></summary> tags. The summary MUST start with "The video presents" to maintain consistent style. 
+  - The video summary never refers to frames as "stills" or "images" - they are frames from a continuous sequence.
 2. A captions section wrapped in <captions></captions> tags
 3. Exactly {num_captions} individual captions, each wrapped in <caption></caption> tags
 4. Each caption MUST start with a timestamp in square brackets, e.g. [2.5]
@@ -460,7 +496,15 @@ The video presents a [the high level action or narrative that takes place over t
 ...additional captions...
 </captions>
 
-IMPORTANT NOTES ON HANDLING FRAME DESCRIPTIONS:
+IMPORTANT NOTES ON HANDLING TRANSCRIPT AND DESCRIPTIONS:
+1. The transcript provides helpful context but should not be directly quoted in captions
+2. Focus captions on describing visual elements and actions:
+   - What is happening in the scene
+   - Physical movements and gestures
+   - Changes in environment or setting
+   - Observable facial expressions and body language
+
+Frame Description Guidelines:
 1. Frame descriptions may vary in detail and consistency between frames
 2. Be cautious with frame descriptions that make assumptions about:
    - Who is speaking or performing actions
@@ -486,6 +530,9 @@ Requirements for Summary:
 3. Include key events and settings without attributing actions to specific people
 4. Integrate both visual and audio information while avoiding assumptions
 5. Keep it concise (3-5 sentences)
+6. Use transcript information to establish the video's context and purpose
+7. Cross-reference transcript for useful context and understanding of emotions associated with the video
+8. Focus on clearly visible elements rather than interpretations
 
 Requirements for Captions:
 1. Generate exactly {num_captions} captions
@@ -498,6 +545,9 @@ Requirements for Captions:
 3. Timestamps should be reasonably spaced throughout the video
 4. Focus on what is definitively shown or heard, not assumptions
 5. IMPORTANT: When multiple frames describe the same scene or action, use the EARLIEST timestamp
+6. Default to neutral terms like "a person" or "someone" when identities are unclear
+7. Use passive voice when action source is ambiguous
+8. Describe only what is visually observable and keep descriptions objective
 
 Input sections:
 <transcript>
@@ -510,6 +560,12 @@ Timestamped descriptions of key frames
 
 def chunk_video_data(transcript: list, descriptions: list, chunk_duration: int = 60) -> list:
     """Split video data into chunks for processing longer videos."""
+    print("\n=== Video Chunking Logic ===")
+    print(f"Total video length: {descriptions[-1][1]:.1f}s")
+    print(f"Base chunk duration: {chunk_duration}s")
+    print(f"Total descriptions: {len(descriptions)}")
+    print(f"Total transcript segments: {len(transcript)}")
+    
     chunks = []
     current_chunk_start = 0
     min_descriptions_per_chunk = 4  # Ensure at least 4 descriptions per chunk
@@ -523,13 +579,20 @@ def chunk_video_data(transcript: list, descriptions: list, chunk_duration: int =
             if current_chunk_start <= desc[1] < current_chunk_end
         ]
         
+        print(f"\nChunk {len(chunks) + 1}:")
+        print(f"- Time window: {current_chunk_start:.1f}s - {current_chunk_end:.1f}s")
+        print(f"- Initial descriptions: {len(chunk_descriptions)}")
+        
         # If chunk has too few descriptions, extend the window
+        original_end = current_chunk_end
         while len(chunk_descriptions) < min_descriptions_per_chunk and current_chunk_end < descriptions[-1][1]:
-            current_chunk_end += 15  # Extend by 15 seconds (reduced from 30)
+            current_chunk_end += 15  # Extend by 15 seconds
             chunk_descriptions = [
                 desc for desc in descriptions 
                 if current_chunk_start <= desc[1] < current_chunk_end
             ]
+            if current_chunk_end > original_end:
+                print(f"- Extended window to {current_chunk_end:.1f}s to get more descriptions: now have {len(chunk_descriptions)}")
         
         # Get transcript segments in this time window
         chunk_transcript = [
@@ -540,16 +603,23 @@ def chunk_video_data(transcript: list, descriptions: list, chunk_duration: int =
         
         if chunk_descriptions:  # Only add chunk if it has descriptions
             chunks.append((chunk_transcript, chunk_descriptions))
+            print(f"- Final chunk size: {current_chunk_end - current_chunk_start:.1f}s")
+            print(f"- Final descriptions: {len(chunk_descriptions)}")
+            print(f"- Transcript segments: {len(chunk_transcript)}")
+        else:
+            print("- Skipping chunk: no descriptions found")
         
         current_chunk_start = current_chunk_end
     
+    print(f"\nFinal chunks: {len(chunks)}")
+    print("=========================\n")
     return chunks
-def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
+
+def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, use_local_llm=False):
     # Load environment variables from .env file
     load_dotenv()
 
     # Check if this is a long video (over 2 minutes)
-    video_duration = descriptions[-1][1]  # Last frame timestamp
     is_long_video = video_duration > 150  # 2.5 minutes threshold
     
     if is_long_video:
@@ -562,7 +632,7 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
             print(f"\nProcessing chunk {i}/{len(chunks)}...")
             
             # Generate synthesis prompt for this chunk
-            synthesis_prompt = get_synthesis_prompt(len(chunk_descriptions), is_long_video=True)
+            synthesis_prompt = get_synthesis_prompt(len(chunk_descriptions), video_duration)
 
             # Prepare the input for the model
             timestamped_transcript = "\n".join([
@@ -609,12 +679,12 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
 
         # Make a final pass to synthesize all summaries into one coherent summary
         print("\nSynthesizing final summary...")
-        final_summary_prompt = """You are tasked with synthesizing multiple summaries from different parts of a video into one coherent, comprehensive summary of the entire video.
-        The frame and scene summaries are presented in chronological order. 
+        final_summary_prompt = """You are tasked with synthesizing multiple summaries and transcript segments from different parts of a single video into one coherent, comprehensive summary of the entire video.
+        The frame and scene summaries, along with transcript segments, are presented in chronological order. The video is never photos, any mentions of photos are incorrect and hallucinations.
         
-        Output a single overall summary of all the frames and scenes that:
+        Output a single overall summary of all the frames, scenes, and dialogue that:
         1. Always starts with "The video presents" to maintain consistent style.
-        2. Captures the main narrative arc, inferring the most likely high level overview and theme, along with emotions and feelings.
+        2. Captures the main narrative arc, inferring the most likely high level overview and theme with the given information, along with emotions and feelings.
         3. Maintains a clear and concise flow
         4. Is roughly the same length as one of the input summaries
         5. Ends immediately after the summary (no extra text)
@@ -625,13 +695,23 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
         Input Format:
         <chunk_summaries>
         [Chronological summaries of segments]
-        </chunk_summaries>"""
+        </chunk_summaries>
+
+        <transcript>
+        [Chronological transcript segments]
+        </transcript>"""
         
         chunk_summaries_content = "\n\n".join([f"Chunk {i+1}:\n{summary}" for i, summary in enumerate(all_summaries)])
-        final_summary_content = f"<chunk_summaries>\n{chunk_summaries_content}\n</chunk_summaries>"
+        # Format transcript for final summary
+        timestamped_transcript = "\n".join([
+            f"[{segment['start']:.2f}s-{segment['end']:.2f}s] {segment['text']}"
+            for segment in transcript
+        ])
+        
+        final_summary_content = f"<chunk_summaries>\n{chunk_summaries_content}\n</chunk_summaries>\n\n<transcript>\n{timestamped_transcript}\n</transcript>"
 
         # Get final summary with retries
-        max_retries = 5  # Increased from 3 to 5
+        max_retries = 5
         final_summary = None
         for attempt in range(max_retries):
             print(f"\nAttempt {attempt + 1}/{max_retries} to get final summary...")
@@ -663,7 +743,7 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
         return final_output, captions
     else:
         # Original logic for short videos with retries
-        synthesis_prompt = get_synthesis_prompt(len(descriptions), is_long_video=False)
+        synthesis_prompt = get_synthesis_prompt(len(descriptions), video_duration)
         timestamped_transcript = "\n".join([f"[{segment['start']:.2f}s-{segment['end']:.2f}s] {segment['text']}" for segment in transcript])
         frame_descriptions = "\n".join([f"[{timestamp:.2f}s] Frame {frame}: {desc}" for frame, timestamp, desc in descriptions])
         user_content = f"<transcript>\n{timestamped_transcript}\n</transcript>\n\n<frame_descriptions>\n{frame_descriptions}\n</frame_descriptions>"
@@ -995,65 +1075,36 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
     # Choose which captions to use
     if use_synthesis_captions and synthesis_captions:
         print("\nUsing synthesis captions for video output...")
+        # Calculate video duration
+        video_duration = total_frames / fps
+        print(f"\nVideo duration: {video_duration:.2f}s")
+        
         # Convert synthesis captions to frame info format
         frame_info = []
         
-        # Calculate minimum time gap based on video duration
-        video_duration = total_frames / fps
-        if video_duration < 20:  # Very short videos (< 15s)
-            min_time_gap = min(0.5, video_duration / 6)  # Allow for 3 captions
-            min_captions = max(3, int(video_duration / 4))  # At least 3 captions
-        elif video_duration < 30:  # Short videos (15-30s)
-            min_time_gap = min(0.5, video_duration / 20)  # At least 10 potential captions
-            min_captions = max(4, int(video_duration / 3))  # At least 4 captions
-        else:  # Longer videos
-            min_time_gap = 1.2
-            min_captions = max(8, int(video_duration / 1.75))  # More captions for longer videos
+        if len(synthesis_captions) > 0:
+            print(f"\nInitial synthesis captions count: {len(synthesis_captions)}")
+            print(f"First caption: {synthesis_captions[0][1][:50]}...")
+            print(f"Last caption: {synthesis_captions[-1][1][:50]}...")
             
-        print(f"Video duration: {video_duration:.2f}s")
-        print(f"Minimum time gap: {min_time_gap:.2f}s")
-        print(f"Minimum captions: {min_captions}")
-        
-        # First pass: Adjust timestamps and mark for filtering
-        adjusted_captions = []
-        for i, (timestamp, text) in enumerate(synthesis_captions):
-            # Adjust timestamp to be 0.1s earlier, but not before 0
-            adjusted_timestamp = max(0.0, timestamp - 0.1)
-            adjusted_captions.append((adjusted_timestamp, text, True))  # True = keep by default
-        
-        # Second pass: Mark captions that are too close to keep
-        for i in range(len(adjusted_captions) - 1):
-            curr_timestamp = adjusted_captions[i][0]
-            next_timestamp = adjusted_captions[i + 1][0]
-            if next_timestamp - curr_timestamp < min_time_gap:
-                # Mark the earlier caption to be filtered out
-                adjusted_captions[i] = (adjusted_captions[i][0], adjusted_captions[i][1], False)
-        
-        # Third pass: Ensure minimum number of captions
-        if len([c for c in adjusted_captions if c[2]]) < min_captions:
-            # Sort by timestamp and keep the most evenly spaced captions
-            all_captions = sorted(adjusted_captions, key=lambda x: x[0])
-            ideal_gap = video_duration / min_captions
-            kept_captions = [(all_captions[0][0], all_captions[0][1], True)]  # Always keep first caption
+            # First pass: Adjust timestamps slightly earlier for better timing
+            adjusted_captions = []
+            for timestamp, text in synthesis_captions:
+                # Adjust timestamp to be 0.1s earlier, but not before 0
+                adjusted_timestamp = max(0.0, timestamp - 0.1)
+                adjusted_captions.append((adjusted_timestamp, text))
             
-            last_kept = all_captions[0][0]
-            for timestamp, text, _ in all_captions[1:]:
-                if len(kept_captions) < min_captions - 1 or timestamp - last_kept >= ideal_gap * 0.5:
-                    kept_captions.append((timestamp, text, True))
-                    last_kept = timestamp
-            adjusted_captions = kept_captions
-        
-        # Convert to frame info format
-        for timestamp, text, keep in adjusted_captions:
-            if keep:
-                frame_number = int(timestamp * fps)
-                frame_info.append((frame_number, timestamp, text))
-        
-        frame_info.sort(key=lambda x: x[1])  # Sort by timestamp
-        print(f"After filtering: {len(frame_info)} captions remaining")
-        if frame_info:
-            print(f"First caption at {frame_info[0][1]:.2f}s: {frame_info[0][2][:50]}...")
-            print(f"Last caption at {frame_info[-1][1]:.2f}s: {frame_info[-1][2][:50]}...")
+            print(f"\nAfter timestamp adjustment: {len(adjusted_captions)} captions")
+            
+            # Convert to frame info format with adjusted timestamps
+            frame_info = [(int(timestamp * fps), timestamp, text) 
+                         for timestamp, text in adjusted_captions]
+            
+            frame_info.sort(key=lambda x: x[1])  # Sort by timestamp
+            print(f"\nFinal output: {len(frame_info)} captions")
+            if frame_info:
+                print(f"First caption at {frame_info[0][1]:.2f}s: {frame_info[0][2][:50]}...")
+                print(f"Last caption at {frame_info[-1][1]:.2f}s: {frame_info[-1][2][:50]}...")
     else:
         print("\nUsing frame descriptions for video output...")
         # Use all frame descriptions
@@ -1343,10 +1394,15 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
 
     start_time = time.time()
 
-    # Get frame count
+    # Get frame count and duration
     frame_count = get_frame_count(video_path)
     if frame_count == 0:
         return "Error: Could not process video.", None, None
+        
+    # Get video duration
+    video_duration = get_video_duration(video_path)
+    if video_duration is None:
+        return "Error: Could not get video duration.", None, None
 
     # Transcribe the video
     transcript = transcribe_video(video_path)
@@ -1366,7 +1422,12 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
 
     # Generate summary and captions
     print("Generating video summary...")
-    synthesis_output, synthesis_captions = summarize_with_hosted_llm(transcript, descriptions, use_local_llm=use_local_llm)
+    synthesis_output, synthesis_captions = summarize_with_hosted_llm(
+        transcript, 
+        descriptions, 
+        video_duration,
+        use_local_llm=use_local_llm
+    )
     
     if synthesis_output is None or (use_synthesis_captions and synthesis_captions is None):
         print("\nError: Failed to generate synthesis. Please try again.")
@@ -1385,7 +1446,7 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
     output_video_path = create_captioned_video(
         video_path, 
         descriptions, 
-        summary,  # Pass just the summary text
+        summary,
         transcript,
         synthesis_captions,
         use_synthesis_captions,
@@ -1397,7 +1458,16 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
 
     # Save output to JSON file
     print("Saving output to JSON file...")
-    save_output(video_path, frame_count, transcript, descriptions, summary, total_run_time)
+    save_output(
+        video_path, 
+        frame_count, 
+        transcript, 
+        descriptions, 
+        summary, 
+        total_run_time,
+        synthesis_output,
+        synthesis_captions
+    )
 
     # Prepare frames with captions for gallery display
     gallery_images = []
