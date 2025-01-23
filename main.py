@@ -233,15 +233,6 @@ def transcribe_video(video_path, trim_silence_enabled=False):
                 generate_kwargs={"task": "transcribe"}
             )
 
-            # Log raw response for debugging
-            log_path = os.path.join('outputs', f'whisper_response_{int(time.time())}.json')
-            try:
-                with open(log_path, 'w', encoding='utf-8') as f:
-                    json.dump(result, f, indent=2, ensure_ascii=False)
-                print(f"Raw Whisper response logged to: {log_path}")
-            except Exception as e:
-                print(f"Warning: Could not log raw Whisper response: {str(e)}")
-
             # Convert pipeline output format to our expected format
             timestamped_transcript = []
             for chunk in result.get("chunks", []):
