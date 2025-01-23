@@ -23,6 +23,7 @@ from difflib import SequenceMatcher
 import ast
 from transformers import pipeline
 import whisper
+import traceback
 
 def similar(a, b, threshold=0.90):
     """Return True if strings are similar above threshold."""
@@ -427,22 +428,22 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
         json.dump(output, f, indent=2)
     print(f"Output saved to {filename}")
 
-def get_synthesis_prompt(num_keyframes: int, video_duration: float) -> str:
-    """Generate a dynamic synthesis prompt based on number of keyframes and actual video duration."""
+def get_synthesis_prompt(num_keyframes: int, video_duration: float, metadata_context: str = "") -> str:
+    """Generate a dynamic synthesis prompt based on number of keyframes, video duration, and metadata."""
     print("\n=== Caption Calculation Logic ===")
     print(f"Input: {num_keyframes} keyframes, {video_duration:.1f}s duration")
+    print(f"Has metadata context: {bool(metadata_context)}")
     
-    # For longer videos, we want fewer captions per minute to avoid overwhelming
+    # Calculate number of captions (existing logic)
     if video_duration > 150:  # > 150s
         print("Long video detected (>150s)")
         num_captions = max(15, num_keyframes // 2)
         print(f"Long video calculation: max(12, {num_keyframes} // 2) = {num_captions}")
     elif video_duration > 90:  # 90-150s
         print("Medium-long video detected (90-150s)")
-        # For medium-long videos, increase caption count by ~25%
-        base_captions = int(video_duration / 6)  # One caption every 6 seconds
+        base_captions = int(video_duration / 6)
         num_captions = min(int(base_captions * 1.25), num_keyframes // 2)
-        num_captions = max(9, num_captions)  # Ensure at least 9 captions
+        num_captions = max(9, num_captions)
         print(f"Medium-long video calculation:")
         print(f"- Base captions (1/6s): {base_captions}")
         print(f"- After 25% increase: {int(base_captions * 1.25)}")
@@ -450,22 +451,18 @@ def get_synthesis_prompt(num_keyframes: int, video_duration: float) -> str:
     else:
         if video_duration < 30:  # Short videos < 30s
             print("Short video detected (<30s)")
-            # For short videos, aim for ~3.5s per caption
-            target_captions = int(video_duration / 3.5)  # One caption every 3.5 seconds
+            target_captions = int(video_duration / 3.5)
             num_captions = min(100, max(4, target_captions))
             print(f"Short video calculation:")
             print(f"- Target: {video_duration:.1f}s / 3.5s = {target_captions}")
             print(f"- Final: min(100, max(4, {target_captions})) = {num_captions}")
         else:  # Medium videos 30-90s
             print("Medium video detected (30-90s)")
-            # For medium videos, aim for captions every 5-7 seconds
-            # Scale from 5s at 30s to 7s at 90s
             caption_interval = 5.0 + (video_duration - 30) * (7.0 - 5.0) / (90 - 30)
             target_captions = int(video_duration / caption_interval)
-            # Add a soft cap based on keyframe density
             max_captions = min(int(video_duration / 4), num_keyframes // 3)
             num_captions = min(target_captions, max_captions)
-            num_captions = max(8, num_captions)  # Ensure at least 8 captions
+            num_captions = max(8, num_captions)
             print(f"Medium video calculation:")
             print(f"- Caption interval: {caption_interval:.1f}s")
             print(f"- Initial target: {video_duration:.1f}s / {caption_interval:.1f}s = {target_captions}")
@@ -475,8 +472,26 @@ def get_synthesis_prompt(num_keyframes: int, video_duration: float) -> str:
     
     print(f"Final decision: {num_captions} captions for {video_duration:.1f}s video ({num_captions/video_duration:.1f} captions/second)")
     print("================================\n")
+
+    # Build the prompt with optional metadata context
+    metadata_section = ""
+    if metadata_context:
+        metadata_section = f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions, with the following important context about the video's origin and purpose:
+
+{metadata_context}
+
+This metadata should inform your understanding of:
+- The video's intended purpose and audience
+- Appropriate style and tone for descriptions
+- Professional vs. amateur context
+- Genre-specific considerations
+"""
+    else:
+        metadata_section = "You are tasked with summarizing and captioning a video based on its transcript and frame descriptions."
     
-    return f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions. You MUST follow the exact format specified below.
+    return f"""{metadata_section}
+
+You MUST follow the exact format specified below.
 
 Output Format:
 1. A summary section wrapped in <summary></summary> tags. The summary MUST start with "This video presents" to maintain consistent style. 
@@ -615,12 +630,62 @@ def chunk_video_data(transcript: list, descriptions: list, chunk_duration: int =
     print("=========================\n")
     return chunks
 
-def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, use_local_llm=False):
+def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, use_local_llm=False, video_path: str = None):
     # Load environment variables from .env file
     load_dotenv()
 
+    # Extract metadata at start
+    metadata_context = ""
+    if video_path:
+        max_metadata_retries = 3
+        for attempt in range(max_metadata_retries):
+            try:
+                print(f"\nExtracting video metadata (attempt {attempt + 1}/{max_metadata_retries})...")
+                cmd = [
+                    'ffprobe',
+                    '-v', 'quiet',
+                    '-print_format', 'json',
+                    '-show_format',
+                    '-show_streams',
+                    video_path
+                ]
+                metadata_json = subprocess.check_output(cmd).decode('utf-8')
+                metadata = json.loads(metadata_json)
+                
+                # Extract relevant metadata fields
+                format_metadata = metadata.get('format', {}).get('tags', {})
+                title = format_metadata.get('title', '')
+                artist = format_metadata.get('artist', '')
+                duration = float(metadata.get('format', {}).get('duration', 0))
+                
+                print(f"Found metadata - Title: {title}, Artist: {artist}, Duration: {duration:.2f}s")
+                
+                # Format metadata context
+                metadata_context = "Video Metadata:\n"
+                if title:
+                    metadata_context += f"- Title: {title}\n"
+                if artist:
+                    metadata_context += f"- Creator: {artist}\n"
+                metadata_context += f"- Duration: {duration:.2f} seconds\n"
+                
+                # Add any other relevant metadata fields
+                for key, value in format_metadata.items():
+                    if key not in ['title', 'artist'] and value:
+                        metadata_context += f"- {key}: {value}\n"
+                break
+            except Exception as e:
+                print(f"Warning: Metadata extraction attempt {attempt + 1} failed: {str(e)}")
+                if attempt < max_metadata_retries - 1:
+                    time.sleep(2 * (attempt + 1))
+                else:
+                    print("Failed to extract metadata after all retries")
+                    metadata_context = ""
+
     # Check if this is a long video (over 2 minutes)
     is_long_video = video_duration > 150  # 2.5 minutes threshold
+    
+    initial_synthesis = None
+    initial_captions = None
     
     if is_long_video:
         print("\nLong video detected. Processing in chunks...")
@@ -631,8 +696,12 @@ def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, u
         for i, (chunk_transcript, chunk_descriptions) in enumerate(chunks, 1):
             print(f"\nProcessing chunk {i}/{len(chunks)}...")
             
-            # Generate synthesis prompt for this chunk
-            synthesis_prompt = get_synthesis_prompt(len(chunk_descriptions), video_duration)
+            # Generate synthesis prompt for this chunk with metadata context
+            synthesis_prompt = get_synthesis_prompt(
+                len(chunk_descriptions), 
+                video_duration,
+                metadata_context  # Pass metadata to each chunk
+            )
 
             # Prepare the input for the model
             timestamped_transcript = "\n".join([
@@ -727,20 +796,44 @@ def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, u
 
         if not final_summary:
             return None, None
+            
+        # For long videos, validate and retry the final recontextualized synthesis
+        if is_long_video:
+            max_recontextualize_retries = 3
+            for attempt in range(max_recontextualize_retries):
+                print(f"\nValidating final synthesis (attempt {attempt + 1}/{max_recontextualize_retries})...")
+                
+                # Recontextualize the final summary with metadata
+                if metadata_context:
+                    final_summary = recontextualize_summary(final_summary, metadata_context, use_local_llm)
+                
+                # Create final synthesis format with the new summary
+                initial_synthesis = f"<summary>\n{final_summary}\n</summary>\n\n<captions>\n"
+                for timestamp, text in sorted(all_captions, key=lambda x: x[0]):
+                    initial_synthesis += f"<caption>[{timestamp:.1f}] {text}</caption>\n"
+                initial_synthesis += "</captions>"
+
+                # Parse and validate the final output
+                initial_summary, initial_captions = parse_synthesis_output(initial_synthesis)
+                if initial_summary and initial_captions:
+                    break
+                
+                if attempt < max_recontextualize_retries - 1:
+                    print(f"\nRetrying final synthesis validation (attempt {attempt + 2}/{max_recontextualize_retries})...")
+                    time.sleep(2 * (attempt + 1))
+                else:
+                    print("\nFailed to validate final synthesis after all retries")
+                    return None, None
+        
+        # Recontextualize the final summary with metadata
+        if metadata_context:
+            final_summary = recontextualize_summary(final_summary, metadata_context, use_local_llm)
         
         # Create final synthesis format with the new summary
-        final_output = f"<summary>\n{final_summary}\n</summary>\n\n<captions>\n"
+        initial_synthesis = f"<summary>\n{final_summary}\n</summary>\n\n<captions>\n"
         for timestamp, text in sorted(all_captions, key=lambda x: x[0]):
-            final_output += f"<caption>[{timestamp:.1f}] {text}</caption>\n"
-        final_output += "</captions>"
-        
-        # Parse the final output to verify it's valid and extract captions
-        summary, captions = parse_synthesis_output(final_output)
-        if not summary or not captions:
-            print("\nFailed to parse final synthesis output")
-            return None, None
-            
-        return final_output, captions
+            initial_synthesis += f"<caption>[{timestamp:.1f}] {text}</caption>\n"
+        initial_synthesis += "</captions>"
     else:
         # Original logic for short videos with retries
         synthesis_prompt = get_synthesis_prompt(len(descriptions), video_duration)
@@ -761,13 +854,15 @@ def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, u
                     continue
                 else:
                     print("Failed all attempts to get completion")
+                    print("Falling back to frame descriptions.")
                     return None, None
             
             print("\nGot completion, attempting to parse...")
-            summary, captions = parse_synthesis_output(completion)
+            initial_summary, initial_captions = parse_synthesis_output(completion)
             
-            if summary and captions:
-                return completion, captions
+            if initial_summary and initial_captions:
+                initial_synthesis = completion
+                break
             else:
                 if attempt < max_retries - 1:
                     print(f"\nRetrying synthesis generation (attempt {attempt + 2}/{max_retries})...")
@@ -776,9 +871,26 @@ def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, u
                     print(f"\nFailed to generate synthesis after {max_retries} attempts.")
                     print("Falling back to frame descriptions.")
                     return None, None
+    
+    # At this point we have initial_synthesis and initial_captions
+    if initial_synthesis and initial_captions:
+        # Recontextualize the final summary with metadata
+        if metadata_context:
+            initial_summary = recontextualize_summary(initial_summary, metadata_context, use_local_llm)
+            # Update the synthesis with the recontextualized summary
+            initial_synthesis = f"<summary>\n{initial_summary}\n</summary>\n\n<captions>\n"
+            for timestamp, text in initial_captions:
+                initial_synthesis += f"<caption>[{timestamp:.1f}] {text}</caption>\n"
+            initial_synthesis += "</captions>"
+        return initial_synthesis, initial_captions
+
+    return None, None
 
 def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -> str:
     """Helper function to get LLM completion with error handling."""
+    print("\n=== Starting LLM Completion ===")
+    print(f"Using local LLM: {use_local_llm}")
+    
     try:
         if use_local_llm:
             pipeline = None
@@ -800,12 +912,11 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
                 print("\nGenerating response with local model...")
                 outputs = pipeline(
                     messages,
-                    max_new_tokens=8000,  # Increased for longer responses
+                    max_new_tokens=8000,
                     temperature=0.3,
-                    
                 )
                 raw_response = outputs[0]["generated_text"]
-                # Log the raw response for debugging
+                
                 print("\nRaw local LLM response:")
                 print("=" * 80)
                 print(raw_response)
@@ -827,6 +938,7 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
                     
                     content = None
                     for pattern in patterns:
+                        print(f"\nTrying pattern: {pattern}")
                         assistant_start = raw_response_str.find(pattern)
                         if assistant_start != -1:
                             content_start = assistant_start + len(pattern)
@@ -835,7 +947,7 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
                                 content_end = raw_response_str.find(end_pattern, content_start)
                                 if content_end != -1:
                                     content = raw_response_str[content_start:content_end]
-                                    # Unescape the content (convert \n to actual newlines)
+                                    # Unescape the content
                                     content = content.encode().decode('unicode_escape')
                                     print("\nExtracted and unescaped content:")
                                     print("-" * 80)
@@ -854,9 +966,14 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
                     return None
                 
                 except Exception as e:
-                    print(f"\nError with local LLM: {str(e)}")
-                    print("Falling back to OpenAI API...")
+                    print(f"\nError extracting content from local LLM response: {str(e)}")
+                    print("Raw response that failed:", raw_response)
                     return None
+                    
+            except Exception as e:
+                print(f"\nError with local LLM: {str(e)}")
+                print("Falling back to OpenAI API...")
+                return None
                     
             finally:
                 # Clean up resources
@@ -867,10 +984,11 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
                         print("\nCleared CUDA cache and released model resources")
         
         # OpenAI API fallback
-        print("\nUsing OpenAI API...")
+        print("\nAttempting OpenAI API...")
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
-            raise ValueError("OPENAI_API_KEY environment variable is not set. Please set it in your .env file or environment.")
+            print("\nNo OpenAI API key found in environment")
+            return None
 
         max_retries = 5
         retry_delay = 1
@@ -894,12 +1012,13 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
                 return response
             except Exception as e:
                 if attempt == max_retries - 1:  # Last attempt
-                    print(f"\nError getting LLM completion after {max_retries} attempts: {str(e)}")
-                    return f"<summary>\nError generating summary: API error after {max_retries} attempts.\n</summary>\n\n<captions>\n</captions>"
-                print(f"\nRetrying LLM completion ({attempt + 1}/{max_retries})...")
+                    print(f"\nError getting OpenAI completion after {max_retries} attempts: {str(e)}")
+                    return None
+                print(f"\nRetrying OpenAI completion ({attempt + 1}/{max_retries})...")
                 time.sleep(retry_delay * (attempt + 1))
     except Exception as e:
         print(f"\nUnexpected error in get_llm_completion: {str(e)}")
+        print("Stack trace:", traceback.format_exc())
         return None
 
 def parse_synthesis_output(output: str) -> tuple:
@@ -972,8 +1091,13 @@ def create_summary_clip(summary: str, width: int, height: int, fps: int) -> str:
     # Create black frame
     frame = np.zeros((height, width, 3), dtype=np.uint8)
     
-    # Prepare text
+    # Add attribution text
+    attribution = "Local Video Understanding Engine - powered by Moondream 2B, CLIP, LLama 3.1 8b Instruct, and Whisper Large"
     font = cv2.FONT_HERSHEY_SIMPLEX
+    attr_font_scale = min(height * 0.02 / 20, 0.6)  # Small font for attribution
+    cv2.putText(frame, attribution, (10, 20), font, attr_font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+    
+    # Prepare text
     font_scale = min(height * 0.04 / 20, 1.0)  # Slightly larger font for summary
     margin = 40
     max_width = int(width * 0.8)  # Use 80% of frame width
@@ -1005,8 +1129,11 @@ def create_summary_clip(summary: str, width: int, height: int, fps: int) -> str:
     # Write frames
     for _ in range(total_frames):
         frame = np.zeros((height, width, 3), dtype=np.uint8)
-        y = start_y
         
+        # Add attribution text to each frame
+        cv2.putText(frame, attribution, (10, 20), font, attr_font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+        
+        y = start_y
         for line in lines:
             # Get text size for centering
             (text_width, _), _ = cv2.getTextSize(line, font, font_scale, 1)
@@ -1426,7 +1553,8 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
         transcript, 
         descriptions, 
         video_duration,
-        use_local_llm=use_local_llm
+        use_local_llm=use_local_llm,
+        video_path=video_path
     )
     
     if synthesis_output is None or (use_synthesis_captions and synthesis_captions is None):
@@ -1609,6 +1737,84 @@ def process_folder(folder_path, args):
                     print(f"Failed to process {video_file} after {max_retries} attempts")
                 else:
                     print("Retrying immediately...")
+
+def recontextualize_summary(summary: str, metadata_context: str, use_local_llm: bool = False) -> str:
+    """Recontextualize just the summary using metadata context."""
+    print("\n=== Starting Recontextualization ===")
+    print("Original Summary:", summary)
+    print("\nMetadata Context:", metadata_context)
+    print(f"Using local LLM: {use_local_llm}")
+    
+    recontextualize_prompt = """You are analyzing a video summary that needs to be enriched with metadata context.
+
+Given the video's metadata and initial summary, provide a more complete understanding that incorporates the video's origin and purpose.
+
+Guidelines for Recontextualization:
+1. Consider the metadata FIRST - it provides crucial context about the video's origin and purpose
+2. Use the video's title, creator, and other metadata to properly frame the context
+3. Pay special attention to:
+   - The video's intended purpose (based on metadata)
+   - Professional vs. amateur content
+   - Genre and style implications
+4. Maintain objectivity while acknowledging the full context
+5. Don't speculate beyond what's supported by metadata
+6. Keep roughly the same length and style
+
+Output Format:
+<summary>
+A new summary that integrates metadata context. Must start with "This video presents"
+</summary>
+
+Input:
+<metadata>
+{metadata}
+</metadata>
+
+<initial_summary>
+{summary}
+</initial_summary>"""
+
+    # Create the prompt with context
+    prompt_content = recontextualize_prompt.format(
+        metadata=metadata_context,
+        summary=summary
+    )
+    
+    print("\nFull Prompt for Recontextualization:")
+    print("=" * 80)
+    print(prompt_content)
+    print("=" * 80)
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        print(f"\nAttempt {attempt + 1}/{max_retries} to get recontextualized summary...")
+        completion = get_llm_completion(prompt_content, "", use_local_llm=use_local_llm)  # Use passed use_local_llm parameter
+        
+        if completion:
+            print("\nGot completion response:")
+            print("-" * 80)
+            print(completion)
+            print("-" * 80)
+            
+            # Extract summary from completion
+            summary_match = re.search(r'<summary>(.*?)</summary>', completion, re.DOTALL)
+            if summary_match:
+                new_summary = summary_match.group(1).strip()
+                print("\nSuccessfully extracted new summary:")
+                print(new_summary)
+                return new_summary
+            else:
+                print("\nFailed to extract summary from completion - no <summary> tags found")
+        else:
+            print("\nNo completion returned from LLM")
+        
+        if attempt < max_retries - 1:
+            print(f"\nRetrying recontextualization (attempt {attempt + 2}/{max_retries})...")
+            time.sleep(2 * (attempt + 1))
+    
+    print("\n=== Recontextualization Failed ===")
+    print("Returning original summary:", summary)
+    return summary
 
 def main():
     parser = argparse.ArgumentParser(description="Process a video file or folder of videos.")
