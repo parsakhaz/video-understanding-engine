@@ -1,6 +1,6 @@
 # Video Summarizer
 
-> **⚠️ IMPORTANT:** This project uses Moondream2 (2025-01-09 release), CLIP, Llama 3.1 8B Instruct, and Whisper (large) via the Hugging Face Transformers library.
+> **⚠️ IMPORTANT:** This project uses Moondream2 (2025-01-09 release), CLIP, Llama 3.1 8B Instruct, and Whisper large-v3-turbo via the Hugging Face Transformers library.
 
 > **💡 NOTE:** This project offers two options for content synthesis:
 > 1. OpenAI GPT-4o API (Default, recommended if you don't have access to LLama 3.1 8B Instruct yet)
@@ -52,6 +52,9 @@ A powerful video summarization tool that combines multiple AI models to provide 
 Reference [Installation](#installation) for more a detailed guide on how to install the dependencies (ffmpeg, pyvips, etc) and get things running.
 
 ```bash
+# Login to Hugging Face (required for model access)
+huggingface-cli login
+
 # Install and run with default settings
 pip install -r requirements.txt
 python main.py video.mp4
@@ -67,7 +70,7 @@ python main.py video.mp4 --frame-selection --local --save
 
 ### Core Features
 - Intelligent frame selection using CLIP embeddings and clustering
-- Audio transcription using Whisper
+- High-quality audio transcription using Whisper large-v3-turbo with chunked processing
 - Visual scene description using Moondream2
 - Dynamic content synthesis with GPT-4o/Llama 3.1
 - Interactive web interface
@@ -76,7 +79,7 @@ python main.py video.mp4 --frame-selection --local --save
 
 ### Video Output Features
 - Intelligent frame descriptions with timestamps
-- Whisper-based speech transcription with hallucination detection
+- High-accuracy speech transcription with chunked processing
 - Adaptive text wrapping and positioning
 - Accessibility-focused caption design
 - Choice between detailed or synthesized captions
@@ -147,11 +150,10 @@ graph TD
     AA -->|No Audio| AB[Empty Transcript]
     AE --> AF[Silence Detection]
     AF --> AG[Silence Trimming]
-    AG --> I[Whisper Model]
+    AG --> I[Whisper large-v3-turbo]
     I --> AH[Timestamp Adjustment]
     AH --> J[Timestamped Transcript]
-    J --> K[Hallucination Detection]
-    AB --> K
+    AB --> J
     end
     
     F --> L[Selected Frames]
@@ -159,7 +161,7 @@ graph TD
     L --> M[Moondream VLM]
     M --> N[Frame Descriptions]
     
-    K --> O[Content Synthesis]
+    J --> O[Content Synthesis]
     N --> O
     
     subgraph "Summarization Pipeline"
@@ -173,7 +175,7 @@ graph TD
     
     subgraph "Video Generation"
     T --> U[Frame Description Overlay]
-    K --> V[Speech Transcript Overlay]
+    J --> V[Speech Transcript Overlay]
     U --> AI[Background Layer]
     AI --> AJ[Text Layer]
     V --> AI
@@ -228,9 +230,9 @@ sequenceDiagram
         AudioProc->>AudioProc: calculate_offset()
         AudioProc-->>Main: trimmed_audio, offset
         deactivate AudioProc
-        Main->>Whisper: transcribe_video(trimmed_audio)
+        Main->>Whisper: pipeline(task="automatic-speech-recognition")
         activate Whisper
-        Note over Whisper: Handle missing audio<br/>Adjust timestamps<br/>Add +0.15s duration
+        Note over Whisper: chunk_length_s=30<br/>batch_size=8<br/>fp16 precision<br/>return_timestamps=True
         Whisper-->>Main: timestamped_transcript
         deactivate Whisper
     end
@@ -409,6 +411,15 @@ video-understanding-engine/
    .\venv\Scripts\activate   # Windows
    ```
 
+3. Login to Hugging Face:
+   ```bash
+   # Install Hugging Face CLI if not already installed
+   pip install huggingface_hub
+
+   # Login with your token from https://huggingface.co/settings/tokens
+   huggingface-cli login
+   ```
+
 ### System Dependencies
 ```bash
 # Linux/Ubuntu
@@ -484,8 +495,8 @@ python main.py video.mp4 --frame-selection --local --save --synthesis-captions
 # Process all videos in a folder
 python main.py /path/to/folder
 
-# Process folder with all features
-python main.py /path/to/folder --frame-selection --local --save --synthesis-captions
+# Process 'inputs' folder with all features
+python main.py inputs --frame-selection --local --save --synthesis-captions
 
 # Quick processing with hosted LLM and synthesis captions
 python main.py video.mp4 --save --synthesis-captions
@@ -633,3 +644,65 @@ Plot interpretation:
 
 1. **Out of Memory**
    - Reduce batch size in `describe_frames()`
+
+## Recent Updates
+
+### Audio Processing Improvements
+- Enhanced timing and synchronization:
+  - Predictive caption timing with 0.5s early display
+  - Smart timestamp selection using earliest scene detection
+  - Minimum 1.2s gap between captions
+  - Automatic audio stream detection
+- **NEW: Upgraded to Whisper large-v3-turbo**
+  - Switched from OpenAI Whisper client to Hugging Face Transformers pipeline
+  - Using fp16 precision for better performance
+  - Chunked processing (30s) for efficient long-form transcription
+  - Batch processing (size=8) for faster inference
+  - Improved transcription quality with latest model
+  - Removed need for post-processing and cleaning
+  - Native timestamp support
+
+### Visual enhancements:
+- Resolution-based font scaling (SD/HD/2K+)
+- Improved contrast with semi-transparent overlays (70% opacity)
+- Centered transcript text with individual boxes
+- Dynamic padding and margins based on resolution
+
+### Requirements
+
+- Python 3.10+
+- CUDA-compatible GPU (recommended)
+- Minimum 16GB RAM
+- Storage:
+  - ~10GB for models
+  - Additional space for video processing
+- FFmpeg (for video processing)
+- Internet connection (for hosted LLM)
+
+### Key Dependencies
+- `torch`: GPU acceleration
+- `transformers`: Whisper large-v3-turbo and LLM models
+- `open_clip`: Frame analysis
+- `gradio`: Web interface
+- `opencv-python`: Video processing
+- `numpy`: Numerical operations
+- `matplotlib`: Visualization
+- See `requirements.txt` for complete list
+
+## Performance Considerations
+
+1. **Frame Selection**
+   - CLIP embeddings are cached in `embedding_cache/`
+   - First run on a video will be slower
+   - Subsequent runs use cached embeddings
+   - Cache format: NumPy arrays (.npy)
+   - Cache size: ~2MB per minute of video
+
+2. **Model Loading**
+   - Models are loaded/unloaded to manage memory
+   - GPU memory requirements:
+     - Whisper large-v3-turbo: ~4GB
+     - Moondream: ~4GB
+     - Llama (if local): ~8GB
+     - CLIP: ~2GB
+   - Total peak memory: ~12GB (with local LLM)

@@ -10,7 +10,6 @@ open_clip_torch
 numpy
 matplotlib
 scikit-learn
-openai-whisper
 openai
 python-dotenv
 gradio

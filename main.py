@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import cv2
-import whisper
 import warnings
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from PIL import Image, ImageDraw, ImageFont
@@ -24,6 +23,7 @@ from pydub import AudioSegment
 from pydub.silence import detect_nonsilent
 from difflib import SequenceMatcher
 import ast
+from transformers import pipeline
 # Function to trim silence from audio
 def trim_silence(audio_path, min_silence_len=1000, silence_thresh=-55, offset=0):
     """
@@ -138,8 +138,23 @@ def clean_transcript(segments):
     }]
 
 # Function to transcribe audio from a video file using Whisper model
-def transcribe_video(video_path):
+def transcribe_video(video_path, trim_silence_enabled=False):
     print(f"Loading audio model")
+
+    # Get video duration using ffprobe
+    try:
+        duration_cmd = [
+            'ffprobe', 
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            video_path
+        ]
+        video_duration = float(subprocess.check_output(duration_cmd).decode().strip())
+        print(f"Video duration: {video_duration:.2f} seconds")
+    except Exception as e:
+        print(f"Warning: Could not get video duration: {str(e)}")
+        video_duration = None
 
     # Check if video has an audio stream using ffprobe
     has_audio = False
@@ -157,7 +172,6 @@ def transcribe_video(video_path):
         print("Error checking audio stream")
     if not has_audio:
         print("No audio track detected. Processing video with empty transcript.")
-        # Return empty transcript with same structure
         return [{
             "start": 0,
             "end": 0,
@@ -169,54 +183,110 @@ def transcribe_video(video_path):
     os.makedirs('outputs', exist_ok=True)
     
     try:
-        # Extract audio using ffmpeg
+        # Extract audio using ffmpeg with higher quality settings
         extract_cmd = [
             'ffmpeg', '-y',
             '-i', video_path,
             '-vn',  # No video
             '-acodec', 'pcm_s16le',  # PCM format
-            '-ar', '16000',  # 16kHz sample rate
-            '-ac', '1',  # Mono
+            '-ar', '16000',  # 16kHz sample rate (Whisper's expected rate)
+            '-ac', '1',  # Mono (Whisper's expected channels)
+            '-sample_fmt', 's16',  # 16-bit depth
             audio_path
         ]
         subprocess.run(extract_cmd, check=True)
         
-        # Trim silence from audio and get the start offset
-        trimmed_audio_path, start_offset_seconds = trim_silence(audio_path)
-        print(f"Trimmed {start_offset_seconds:.2f} seconds of silence from start")
-        
-        # Suppress the FutureWarning from torch.load
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=FutureWarning)
-            model = whisper.load_model("large")
-
-        print(f"Audio model loaded")
-        print(f"Transcribing video")
+        # Optionally trim silence with less aggressive settings
+        if trim_silence_enabled:
+            trimmed_audio_path, start_offset_seconds = trim_silence(
+                audio_path,
+                min_silence_len=500,  # Reduced from 1000ms
+                silence_thresh=-65,    # Less aggressive threshold
+                offset=100            # Keep more audio around non-silent parts
+            )
+            print(f"Trimmed {start_offset_seconds:.2f} seconds of silence from start")
+        else:
+            trimmed_audio_path = audio_path
+            start_offset_seconds = 0
 
         try:
-            # Transcribe the trimmed audio
-            result = model.transcribe(trimmed_audio_path)
+            # Setup device
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            print(f"Using device: {device}")
+            
+            # Create pipeline
+            pipe = pipeline(
+                task="automatic-speech-recognition",
+                model="openai/whisper-large-v3-turbo",
+                chunk_length_s=30,
+                device=device,
+            )
+            
+            print(f"Audio model loaded")
+            print(f"Transcribing video")
 
-            # Process the result to include timestamps, adjusting for trimmed silence
-            raw_transcript = []
-            for segment in result["segments"]:
-                raw_transcript.append({
-                    "start": segment["start"] + start_offset_seconds,
-                    "end": segment["end"] + start_offset_seconds + 0.15,
-                    "text": segment["text"].strip()
-                })
+            # Run transcription
+            result = pipe(
+                trimmed_audio_path,
+                batch_size=8,
+                return_timestamps=True,
+                generate_kwargs={"task": "transcribe"}
+            )
+
+            # Log raw response for debugging
+            log_path = os.path.join('outputs', f'whisper_response_{int(time.time())}.json')
+            try:
+                with open(log_path, 'w', encoding='utf-8') as f:
+                    json.dump(result, f, indent=2, ensure_ascii=False)
+                print(f"Raw Whisper response logged to: {log_path}")
+            except Exception as e:
+                print(f"Warning: Could not log raw Whisper response: {str(e)}")
+
+            # Convert pipeline output format to our expected format
+            timestamped_transcript = []
+            for chunk in result.get("chunks", []):
+                try:
+                    # Get timestamp with more robust error handling
+                    timestamp = chunk.get("timestamp")
+                    if timestamp is None or not isinstance(timestamp, (list, tuple)) or len(timestamp) != 2:
+                        print(f"Warning: Invalid timestamp format in chunk: {timestamp}")
+                        continue
+                        
+                    start, end = timestamp
+                    if start is None:
+                        print(f"Warning: None value for start timestamp")
+                        continue
+
+                    # Handle null end timestamp for final chunk
+                    if end is None:
+                        if video_duration is not None:
+                            print(f"Adjusting null end timestamp to video duration: {video_duration:.2f}s")
+                            end = video_duration
+                        else:
+                            print(f"Warning: Cannot fix null end timestamp - no video duration available")
+                            continue
+                        
+                    text = chunk.get("text", "").strip()
+                    if not text:  # Skip empty text chunks
+                        continue
+                        
+                    timestamped_transcript.append({
+                        "start": float(start) + start_offset_seconds,
+                        "end": float(end) + start_offset_seconds,
+                        "text": text
+                    })
+                except Exception as e:
+                    print(f"Warning: Error processing chunk: {str(e)}")
+                    continue
             
-            # Clean up the transcript
-            timestamped_transcript = clean_transcript(raw_transcript)
-            
-            if not timestamped_transcript:  # If all segments were filtered out
+            if not timestamped_transcript:  # If no valid chunks were found
                 timestamped_transcript = [{
                     "start": 0,
                     "end": 0,
                     "text": ""
                 }]
                 
-        except RuntimeError as e:
+        except Exception as e:
             print(f"Error transcribing video: {str(e)}")
             timestamped_transcript = [{
                 "start": 0,
@@ -231,19 +301,14 @@ def transcribe_video(video_path):
             "text": ""
         }]
     finally:
-        # Clean up temporary files
+        # Clean up temporary audio files
         try:
-            os.remove(audio_path)
-            if 'trimmed_audio_path' in locals() and audio_path != trimmed_audio_path:
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
+            if trim_silence_enabled and os.path.exists(trimmed_audio_path) and trimmed_audio_path != audio_path:
                 os.remove(trimmed_audio_path)
         except Exception as e:
             print(f"Error cleaning up temporary files: {str(e)}")
-        
-        # Unload the model
-        if 'model' in locals():
-            del model
-            torch.cuda.empty_cache()  # If using CUDA
-            print("Audio model unloaded")
 
     return timestamped_transcript
 
@@ -599,24 +664,23 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
         final_summary_prompt = """You are tasked with synthesizing multiple summaries from different parts of a video into one coherent, comprehensive summary of the entire video.
         The frame and scene summaries are presented in chronological order. 
         
-        Output a single overall summary of all the frames and scenesthat:
+        Output a single overall summary of all the frames and scenes that:
         1. Always starts with "The video presents" to maintain consistent style.
-        2. Captures the main narrative arc of the entire video, inferring the most likely high level overview of the video and theme, along with emotions and feelings.
+        2. Captures the main narrative arc, inferring the most likely high level overview and theme, along with emotions and feelings.
         3. Maintains a clear and concise flow
         4. Is roughly the same length as one of the input summaries
         5. Ends immediately after the summary (no extra text)
-        6. IMPORTANT: Never refers to frames as "stills" or "images" - they are video frames from a continuous video
+        6. IMPORTANT: Never refers to frames as "stills" or "images" - they are frames from a continuous sequence
         7. You must focus on observable events and context without making assumptions about who is doing what
         8. You must use neutral language and avoids attributing actions unless explicitly clear
         
         Input Format:
         <chunk_summaries>
-        [Chronological summaries of video segments]
+        [Chronological summaries of segments]
         </chunk_summaries>"""
         
         chunk_summaries_content = "\n\n".join([f"Chunk {i+1}:\n{summary}" for i, summary in enumerate(all_summaries)])
         final_summary_content = f"<chunk_summaries>\n{chunk_summaries_content}\n</chunk_summaries>"
-        
         # Get final summary with retries
         for attempt in range(max_retries):
             print(f"\nAttempt {attempt + 1}/{max_retries} to get final summary...")
@@ -976,12 +1040,12 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
         min_time_gap = 1.2  # Minimum time gap between captions in seconds
         
         for i, (timestamp, text) in enumerate(synthesis_captions):
-            # Adjust timestamp to be 0.5s earlier, but not before 0
-            adjusted_timestamp = max(0.0, timestamp - 0.5)
+            # Adjust timestamp to be 0.1s earlier, but not before 0
+            adjusted_timestamp = max(0.0, timestamp - 0.1)
             
             # Skip if this caption is too close to the previous one
             if i > 0:
-                prev_timestamp = max(0.0, synthesis_captions[i-1][0] - 0.5)  # Use adjusted previous timestamp
+                prev_timestamp = max(0.0, synthesis_captions[i-1][0] - 0.1)  # Use adjusted previous timestamp
                 if adjusted_timestamp - prev_timestamp < min_time_gap:
                     # Remove the previous caption if it exists in frame_info
                     if frame_info and frame_info[-1][1] == prev_timestamp:
