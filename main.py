@@ -1796,15 +1796,31 @@ Input:
             print(completion)
             print("-" * 80)
             
-            # Extract summary from completion
-            summary_match = re.search(r'<summary>(.*?)</summary>', completion, re.DOTALL)
-            if summary_match:
-                new_summary = summary_match.group(1).strip()
-                print("\nSuccessfully extracted new summary:")
-                print(new_summary)
-                return new_summary
-            else:
-                print("\nFailed to extract summary from completion - no <summary> tags found")
+            # Try multiple patterns to extract summary
+            patterns = [
+                r'<summary>\s*(.*?)\s*</summary>',  # Standard XML
+                r'<summary>\n*(.*?)\n*</summary>',  # XML with newlines
+                r'Summary:\s*(.*?)\s*(?:\n|$)',     # Colon format
+                r'"summary":\s*"(.*?)"',            # JSON format
+                r'summary=(.*?)(?:\n|$)'            # Assignment format
+            ]
+            
+            for pattern in patterns:
+                summary_match = re.search(pattern, completion, re.DOTALL | re.IGNORECASE)
+                if summary_match:
+                    new_summary = summary_match.group(1).strip()
+                    # Validate summary starts with "This video presents"
+                    if new_summary.startswith("This video presents"):
+                        print("\nSuccessfully extracted new summary using pattern:", pattern)
+                        print(new_summary)
+                        return new_summary
+                    else:
+                        print(f"\nFound summary with pattern {pattern} but it doesn't start with 'This video presents'")
+                        print("Trying next pattern...")
+            
+            print("\nFailed to extract valid summary with any pattern")
+            print("Raw completion response:")
+            print(completion)
         else:
             print("\nNo completion returned from LLM")
         
