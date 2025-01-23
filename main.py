@@ -424,7 +424,10 @@ def get_synthesis_prompt(num_keyframes: int, is_long_video: bool = False) -> str
     if is_long_video:
         num_captions = max(12, num_keyframes // 2)
     else:
-        num_captions = min(100, max(12, num_keyframes // 1.5))
+        # For short videos, aim for ~3.5s per caption
+        video_duration = num_keyframes / 30  # Rough estimate of video duration (assuming 30fps)
+        target_captions = int(video_duration / 3.5)  # One caption every 3.5 seconds
+        num_captions = min(100, max(4, target_captions))  # At least 4, at most 100 (aligned with filtering)
     
     return f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions. You MUST follow the exact format specified below.
 
@@ -436,24 +439,34 @@ Output Format:
 
 Example format:
 <summary>
-The video presents a dynamic sequence of events in a classroom setting, where students and teachers interact during a typical lesson...
+The video presents a dynamic sequence of events in a [location], where [action/assumptions]...
 </summary>
 
 <captions>
 <caption>[0.0] A teacher stands at the front of the classroom...</caption>
-<caption>[5.2] Students raise their hands to answer...</caption>
+<caption>[3.2] Students raise their hands to answer...</caption>
 ...additional captions...
 </captions>
 
-IMPORTANT RESTRICTIONS:
-1. NEVER attribute speech to specific individuals unless explicitly confirmed in the transcript
-2. NEVER assume who is speaking when describing scenes
-3. NEVER associate specific actions with named individuals unless visually obvious
-4. NEVER make assumptions about relationships or roles between people
-5. Use neutral descriptions like "a person", "someone", or "the speaker" instead of specific identifiers
-6. Only mention names if they are explicitly stated in the transcript or clearly shown in text/graphics
-7. Focus on describing what is visually apparent without making assumptions about who is doing what
-8. When in doubt, use passive voice or general descriptions rather than attributing actions
+IMPORTANT NOTES ON HANDLING FRAME DESCRIPTIONS:
+1. Frame descriptions may vary in detail and consistency between frames
+2. Be cautious with frame descriptions that make assumptions about:
+   - Who is speaking or performing actions
+   - Relationships between people
+   - Roles or identities of individuals
+   - Continuity between frames
+3. When synthesizing descriptions:
+   - Default to neutral terms like "a person", "someone", or "the speaker"
+   - Only attribute actions/speech if explicitly clear from transcript
+   - Focus on clearly visible elements rather than interpretations
+   - Use passive voice when action source is ambiguous
+   - Cross-reference transcript before assigning names/identities
+4. If frame descriptions conflict or make assumptions:
+   - Favor the most conservative interpretation
+   - Omit speculative details
+   - Focus on concrete visual elements
+   - Maintain consistent neutral language
+5. Remember that gaps may exist between frames, so avoid assuming continuity.
 
 Requirements for Summary:
 1. IMPORTANT: Always start with "The video presents" to maintain consistent style
@@ -972,25 +985,63 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
         print("\nUsing synthesis captions for video output...")
         # Convert synthesis captions to frame info format
         frame_info = []
-        min_time_gap = 1.2  # Minimum time gap between captions in seconds
         
+        # Calculate minimum time gap based on video duration
+        video_duration = total_frames / fps
+        if video_duration < 20:  # Very short videos (< 15s)
+            min_time_gap = min(0.5, video_duration / 6)  # Allow for 3 captions
+            min_captions = max(3, int(video_duration / 4))  # At least 3 captions
+        elif video_duration < 30:  # Short videos (15-30s)
+            min_time_gap = min(0.5, video_duration / 20)  # At least 10 potential captions
+            min_captions = max(4, int(video_duration / 3))  # At least 4 captions
+        else:  # Longer videos
+            min_time_gap = 1.2
+            min_captions = max(8, int(video_duration / 1.75))  # More captions for longer videos
+            
+        print(f"Video duration: {video_duration:.2f}s")
+        print(f"Minimum time gap: {min_time_gap:.2f}s")
+        print(f"Minimum captions: {min_captions}")
+        
+        # First pass: Adjust timestamps and mark for filtering
+        adjusted_captions = []
         for i, (timestamp, text) in enumerate(synthesis_captions):
             # Adjust timestamp to be 0.1s earlier, but not before 0
             adjusted_timestamp = max(0.0, timestamp - 0.1)
+            adjusted_captions.append((adjusted_timestamp, text, True))  # True = keep by default
+        
+        # Second pass: Mark captions that are too close to keep
+        for i in range(len(adjusted_captions) - 1):
+            curr_timestamp = adjusted_captions[i][0]
+            next_timestamp = adjusted_captions[i + 1][0]
+            if next_timestamp - curr_timestamp < min_time_gap:
+                # Mark the earlier caption to be filtered out
+                adjusted_captions[i] = (adjusted_captions[i][0], adjusted_captions[i][1], False)
+        
+        # Third pass: Ensure minimum number of captions
+        if len([c for c in adjusted_captions if c[2]]) < min_captions:
+            # Sort by timestamp and keep the most evenly spaced captions
+            all_captions = sorted(adjusted_captions, key=lambda x: x[0])
+            ideal_gap = video_duration / min_captions
+            kept_captions = [(all_captions[0][0], all_captions[0][1], True)]  # Always keep first caption
             
-            # Skip if this caption is too close to the previous one
-            if i > 0:
-                prev_timestamp = max(0.0, synthesis_captions[i-1][0] - 0.1)  # Use adjusted previous timestamp
-                if adjusted_timestamp - prev_timestamp < min_time_gap:
-                    # Remove the previous caption if it exists in frame_info
-                    if frame_info and frame_info[-1][1] == prev_timestamp:
-                        frame_info.pop()
-            
-            # Find nearest frame number using adjusted timestamp
-            frame_number = int(adjusted_timestamp * fps)
-            frame_info.append((frame_number, adjusted_timestamp, text))
-            
-        print(f"After filtering close captions: {len(frame_info)} captions remaining")
+            last_kept = all_captions[0][0]
+            for timestamp, text, _ in all_captions[1:]:
+                if len(kept_captions) < min_captions - 1 or timestamp - last_kept >= ideal_gap * 0.5:
+                    kept_captions.append((timestamp, text, True))
+                    last_kept = timestamp
+            adjusted_captions = kept_captions
+        
+        # Convert to frame info format
+        for timestamp, text, keep in adjusted_captions:
+            if keep:
+                frame_number = int(timestamp * fps)
+                frame_info.append((frame_number, timestamp, text))
+        
+        frame_info.sort(key=lambda x: x[1])  # Sort by timestamp
+        print(f"After filtering: {len(frame_info)} captions remaining")
+        if frame_info:
+            print(f"First caption at {frame_info[0][1]:.2f}s: {frame_info[0][2][:50]}...")
+            print(f"Last caption at {frame_info[-1][1]:.2f}s: {frame_info[-1][2][:50]}...")
     else:
         print("\nUsing frame descriptions for video output...")
         # Use all frame descriptions
