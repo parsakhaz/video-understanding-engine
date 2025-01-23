@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-import torch
-from transformers import pipeline
+import whisper
 import subprocess
 import json
 import os
@@ -46,69 +45,25 @@ def extract_audio(video_path):
         print(f"Error extracting audio: {str(e)}")
         return None
 
-def correct_timestamps(chunks):
-    """
-    Correct timestamps that reset every ~30 seconds.
-    Algorithm:
-    1. Track the current 30s segment we're in
-    2. When we see a timestamp near 0 after being in the 20-30s range,
-       we know we've wrapped to the next 30s segment
-    3. Apply the current offset to all subsequent timestamps until next reset
-    """
-    corrected_transcript = []
-    current_offset = 0
-    last_end = 0
-    in_high_range = False  # Flag to track if we were in 20-30s range
+def process_transcript(segments):
+    """Convert Whisper segments to our transcript format."""
+    processed_transcript = []
     
-    print("\nTimestamp Correction Analysis:")
-    print("------------------------------")
-    
-    for i, chunk in enumerate(chunks):
-        start = chunk.get("timestamp", [None, None])[0]
-        end = chunk.get("timestamp", [None, None])[1]
-        text = chunk.get("text", "").strip()
+    for segment in segments:
+        start = segment.get("start")
+        end = segment.get("end")
+        text = segment.get("text", "").strip()
         
-        if start is None or start == 0 or end is None or end == 0 or not text:
+        if start is None or end is None or not text:
             continue
             
-        # Check if we were in high range (20-30s)
-        if last_end > 20:
-            in_high_range = True
-            
-        # Detect wrap-around to next 30s segment
-        # If we were in high range and now we're back to low numbers (0-5s)
-        if in_high_range and 0 <= start <= 5:
-            current_offset += 30
-            in_high_range = False
-            print(f"\nRESET DETECTED at chunk {i}:")
-            print(f"  Previous end time: {last_end:.2f}s")
-            print(f"  Current start time: {start:.2f}s")
-            print(f"  Adding 30s - New offset: {current_offset}s")
-        
-        # Always apply the current offset to both start and end times
-        corrected_start = start + current_offset
-        corrected_end = end + current_offset
-        
-        # Store corrected chunk
-        if text:  # Only store non-empty chunks
-            if current_offset > 0:
-                print(f"\nChunk {i}:")
-                print(f"  Text: {text}")
-                print(f"  Original: {start:.2f}s -> {end:.2f}s")
-                print(f"  Corrected: {corrected_start:.2f}s -> {corrected_end:.2f}s")
-                print(f"  Current offset: +{current_offset}s")
-            
-            corrected_transcript.append({
-                "start": corrected_start,
-                "end": corrected_end,
-                "text": text
-            })
-        
-        # Update last_end using the original (non-offset) time for reset detection
-        last_end = end
+        processed_transcript.append({
+            "start": start,
+            "end": end,
+            "text": text
+        })
     
-    print(f"\nFinal offset: {current_offset}s")
-    return corrected_transcript
+    return processed_transcript
 
 def add_caption_to_frame(frame, text, font_path=None):
     """Add caption text to a video frame."""
@@ -276,26 +231,14 @@ def test_whisper_transcription(video_path):
         return
         
     try:
-        # Setup device
-        device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        print(f"Using device: {device}")
-        
-        # Create pipeline (no chunking)
-        pipe = pipeline(
-            task="automatic-speech-recognition",
-            model="openai/whisper-large-v3-turbo",
-            device=device,
-        )
+        # Load Whisper model
+        print("Loading Whisper model...")
+        model = whisper.load_model("large")
         
         print("Transcribing audio...")
         
         # Run transcription
-        result = pipe(
-            audio_path,
-            batch_size=8,
-            return_timestamps=True,
-            generate_kwargs={"task": "transcribe"}
-        )
+        result = model.transcribe(audio_path)
         
         # Save raw output
         timestamp = int(time.time())
@@ -310,50 +253,24 @@ def test_whisper_transcription(video_path):
             f.write(f"Timestamp: {timestamp}\n")
             f.write("\n=== FULL RESULT ===\n")
             f.write(json.dumps(result, indent=2, ensure_ascii=False))
-            f.write("\n\n=== CHUNKS WITH ANALYSIS ===\n")
-            
-            # Analyze chunks
-            prev_end = 0
-            for i, chunk in enumerate(result.get("chunks", [])):
-                f.write(f"\nChunk {i+1}:\n")
-                f.write(json.dumps(chunk, indent=2, ensure_ascii=False))
-                
-                # Analyze timestamps
-                timestamp = chunk.get("timestamp")
-                if timestamp:
-                    start, end = timestamp
-                    if start is not None and end is not None:
-                        gap = start - prev_end if i > 0 else 0
-                        f.write(f"\nAnalysis:")
-                        f.write(f"\n- Duration: {end - start:.2f}s")
-                        f.write(f"\n- Gap from previous: {gap:.2f}s")
-                        if gap < -10:  # Highlight potential resets
-                            f.write(f"\n- WARNING: Timestamp reset detected!")
-                        prev_end = end
-                
-                f.write("\n" + "-"*50)
         
         print(f"\nRaw output saved to: {raw_output_path}")
         
-        # Process and correct timestamps
-        corrected_transcript = correct_timestamps(result.get("chunks", []))
-        
-        # Handle final chunk's end time
-        if corrected_transcript and corrected_transcript[-1]["end"] is None and duration:
-            corrected_transcript[-1]["end"] = duration
+        # Process segments
+        processed_transcript = process_transcript(result["segments"])
         
         # Save processed output
         with open(json_output_path, 'w', encoding='utf-8') as f:
             json.dump({
                 "video_path": video_path,
                 "duration": duration,
-                "transcript": corrected_transcript
+                "transcript": processed_transcript
             }, f, indent=2, ensure_ascii=False)
             
         print(f"Processed output saved to: {json_output_path}")
         
         # After saving the processed output, create captioned video
-        create_captioned_video(video_path, corrected_transcript)
+        create_captioned_video(video_path, processed_transcript)
         
     except Exception as e:
         print(f"Error during transcription: {str(e)}")
