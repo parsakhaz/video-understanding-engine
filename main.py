@@ -421,13 +421,25 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
 def get_synthesis_prompt(num_keyframes: int, is_long_video: bool = False) -> str:
     """Generate a dynamic synthesis prompt based on number of keyframes."""
     # For longer videos, we want fewer captions per minute to avoid overwhelming
-    if is_long_video:
+    if is_long_video:  # > 150s
         num_captions = max(12, num_keyframes // 2)
     else:
-        # For short videos, aim for ~3.5s per caption
-        video_duration = num_keyframes / 30  # Rough estimate of video duration (assuming 30fps)
-        target_captions = int(video_duration / 3.5)  # One caption every 3.5 seconds
-        num_captions = min(100, max(4, target_captions))  # At least 4, at most 100 (aligned with filtering)
+        # Estimate video duration from keyframes (assuming 30fps)
+        video_duration = num_keyframes / 30
+        
+        if video_duration < 30:  # Short videos < 30s
+            # For short videos, aim for ~3.5s per caption
+            target_captions = int(video_duration / 3.5)  # One caption every 3.5 seconds
+            num_captions = min(100, max(4, target_captions))
+        else:  # Medium videos 30-150s
+            # For medium videos, scale caption interval from 5s to 8s
+            # Start with 1 caption every 5s at 30s, increase to 1 every 8s at 150s
+            caption_interval = 5.0 + (video_duration - 30) * (8.0 - 5.0) / (150 - 30)
+            target_captions = int(video_duration / caption_interval)
+            # Add a soft cap based on keyframe density
+            max_captions = min(int(video_duration / 4), num_keyframes // 3)
+            num_captions = min(target_captions, max_captions)
+            num_captions = max(8, num_captions)  # Ensure at least 8 captions for medium videos
     
     return f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions. You MUST follow the exact format specified below.
 
@@ -439,7 +451,7 @@ Output Format:
 
 Example format:
 <summary>
-The video presents a dynamic sequence of events in a [location], where [action/assumptions]...
+The video presents a [the high level action or narrative that takes place over the frames] in a [location], where [action/assumptions]...
 </summary>
 
 <captions>
