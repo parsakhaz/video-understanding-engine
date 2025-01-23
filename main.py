@@ -179,30 +179,26 @@ def transcribe_video(video_path, trim_silence_enabled=False):
         }]
 
     # Extract audio from video
-    audio_path = os.path.join('outputs', f'temp_audio_{int(time.time())}.wav')
+    audio_path = os.path.join('outputs', f'temp_audio_{int(time.time())}.mp3')
     os.makedirs('outputs', exist_ok=True)
     
     try:
-        # Extract audio using ffmpeg with higher quality settings
+        # Simple audio extraction to MP3
         extract_cmd = [
             'ffmpeg', '-y',
             '-i', video_path,
             '-vn',  # No video
-            '-acodec', 'pcm_s16le',  # PCM format
-            '-ar', '16000',  # 16kHz sample rate (Whisper's expected rate)
-            '-ac', '1',  # Mono (Whisper's expected channels)
-            '-sample_fmt', 's16',  # 16-bit depth
             audio_path
         ]
         subprocess.run(extract_cmd, check=True)
         
-        # Optionally trim silence with less aggressive settings
+        # Optionally trim silence
         if trim_silence_enabled:
             trimmed_audio_path, start_offset_seconds = trim_silence(
                 audio_path,
-                min_silence_len=500,  # Reduced from 1000ms
-                silence_thresh=-65,    # Less aggressive threshold
-                offset=100            # Keep more audio around non-silent parts
+                min_silence_len=5000,
+                silence_thresh=-105,
+                offset=100
             )
             print(f"Trimmed {start_offset_seconds:.2f} seconds of silence from start")
         else:
@@ -218,7 +214,6 @@ def transcribe_video(video_path, trim_silence_enabled=False):
             pipe = pipeline(
                 task="automatic-speech-recognition",
                 model="openai/whisper-large-v3-turbo",
-                chunk_length_s=30,
                 device=device,
             )
             
@@ -296,8 +291,6 @@ def transcribe_video(video_path, trim_silence_enabled=False):
         try:
             if os.path.exists(audio_path):
                 os.remove(audio_path)
-            if trim_silence_enabled and os.path.exists(trimmed_audio_path) and trimmed_audio_path != audio_path:
-                os.remove(trimmed_audio_path)
         except Exception as e:
             print(f"Error cleaning up temporary files: {str(e)}")
 
