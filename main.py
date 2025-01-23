@@ -203,16 +203,16 @@ def transcribe_video(video_path):
         timestamp = int(time.time())
         raw_output_path = os.path.join('outputs', f'whisper_raw_{timestamp}.txt')
         
-        # Save raw output with detailed information
-        with open(raw_output_path, 'w', encoding='utf-8') as f:
-            f.write("=== RAW WHISPER OUTPUT ===\n\n")
-            f.write(f"Video path: {video_path}\n")
-            f.write(f"Video duration: {duration:.2f}s\n")
-            f.write(f"Timestamp: {timestamp}\n")
-            f.write("\n=== FULL RESULT ===\n")
-            f.write(json.dumps(result, indent=2, ensure_ascii=False))
+        # # Save raw output with detailed information
+        # with open(raw_output_path, 'w', encoding='utf-8') as f:
+        #     f.write("=== RAW WHISPER OUTPUT ===\n\n")
+        #     f.write(f"Video path: {video_path}\n")
+        #     f.write(f"Video duration: {duration:.2f}s\n")
+        #     f.write(f"Timestamp: {timestamp}\n")
+        #     f.write("\n=== FULL RESULT ===\n")
+        #     f.write(json.dumps(result, indent=2, ensure_ascii=False))
         
-        print(f"\nRaw output saved to: {raw_output_path}")
+        # print(f"\nRaw output saved to: {raw_output_path}")
         
         # Process segments
         processed_transcript = process_transcript(result["segments"])
@@ -1085,18 +1085,6 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                    current_time >= frame_info[current_desc_idx + 1][1]):
                 current_desc_idx += 1
 
-            # Find appropriate transcript segment and check if we're within its time period
-            current_transcript_text = ""
-            while (current_transcript_idx < len(transcript) - 1 and 
-                   current_time >= transcript[current_transcript_idx + 1]["start"]):
-                current_transcript_idx += 1
-            
-            # Only use transcript text if we're within its time period
-            transcript_segment = transcript[current_transcript_idx]
-            if (current_time >= transcript_segment["start"] and 
-                current_time <= transcript_segment["end"]):
-                current_transcript_text = transcript_segment["text"]
-
             # Get current description
             frame_number, timestamp, description = frame_info[current_desc_idx]
 
@@ -1120,7 +1108,6 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             words = full_text.split()
             top_lines = []
             current_line = []
-            bottom_lines = []  # Initialize bottom_lines here, outside any conditional blocks
             
             font_scale = min(height * 0.03 / min_line_height, 0.7)
             
@@ -1139,46 +1126,56 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             if current_line:
                 top_lines.append(' '.join(current_line))
 
-            # If we have speech transcription and transcriptions should be shown, add bottom overlay
-            if current_transcript_text and show_transcriptions:  # Modified condition
-                # Normalize smart quotes and apostrophes in transcript
-                current_transcript_text = current_transcript_text.replace('"', '"').replace('"', '"')
-                current_transcript_text = current_transcript_text.replace("'", "'").replace("'", "'")
-                # Split transcript into lines
-                subtitle_words = current_transcript_text.split()
-                current_line = []
-                bottom_lines = []  # Reset bottom_lines here
+            # Handle transcriptions (bottom overlay)
+            bottom_lines = []
+            if show_transcriptions:
+                # Find appropriate transcript segment and check if we're within its time period
+                while (current_transcript_idx < len(transcript) - 1 and 
+                       current_time >= transcript[current_transcript_idx + 1]["start"]):
+                    current_transcript_idx += 1
                 
-                # Adjust font and padding based on resolution tiers
-                if height >= 1440:  # 2K and above
-                    base_increase = 0.6
-                    bg_padding = 20
-                    bottom_margin = int(height * 0.25)  # Increased from 0.2
-                elif height >= 720:  # HD
-                    base_increase = 0.4
-                    bg_padding = 10
-                    bottom_margin = int(height * 0.22)  # Increased from 0.15
-                else:  # SD
-                    base_increase = 0.1
-                    bg_padding = 5
-                    bottom_margin = int(height * 0.18)  # Increased from 0.1
-                
-                transcript_font_scale = min(height * 0.03 / min_line_height, 0.7) + base_increase
-                
-                for word in subtitle_words:
-                    test_line = ' '.join(current_line + [word])
-                    (text_width, _), _ = cv2.getTextSize(test_line, font, transcript_font_scale, 1)
+                # Only use transcript text if we're within its time period
+                transcript_segment = transcript[current_transcript_idx]
+                if (current_time >= transcript_segment["start"] and 
+                    current_time <= transcript_segment["end"]):
+                    current_transcript_text = transcript_segment["text"]
                     
-                    if text_width <= max_width - 2 * margin:
-                        current_line.append(word)
-                    else:
-                        if current_line:
-                            bottom_lines.append(' '.join(current_line))
-                        current_line = [word]
-                
-                if current_line:
-                    bottom_lines.append(' '.join(current_line))
-            
+                    # Normalize smart quotes and apostrophes in transcript
+                    current_transcript_text = current_transcript_text.replace('"', '"').replace('"', '"')
+                    current_transcript_text = current_transcript_text.replace("'", "'").replace("'", "'")
+                    
+                    # Adjust font and padding based on resolution tiers
+                    if height >= 1440:  # 2K and above
+                        base_increase = 0.6
+                        bg_padding = 20
+                        bottom_margin = int(height * 0.25)
+                    elif height >= 720:  # HD
+                        base_increase = 0.2
+                        bg_padding = 8
+                        bottom_margin = int(height * 0.15)
+                    else:  # SD
+                        base_increase = 0.1
+                        bg_padding = 5
+                        bottom_margin = int(height * 0.18)
+                    
+                    transcript_font_scale = min(height * 0.025 / min_line_height, 0.6) + base_increase
+                    
+                    # Split transcript into lines
+                    current_line = []
+                    for word in current_transcript_text.split():
+                        test_line = ' '.join(current_line + [word])
+                        (text_width, _), _ = cv2.getTextSize(test_line, font, transcript_font_scale, 1)
+                        
+                        if text_width <= max_width - 2 * margin:
+                            current_line.append(word)
+                        else:
+                            if current_line:
+                                bottom_lines.append(' '.join(current_line))
+                            current_line = [word]
+                    
+                    if current_line:
+                        bottom_lines.append(' '.join(current_line))
+
             # Calculate box dimensions for top overlay (frame descriptions)
             top_line_count = len(top_lines)
             # Adjust line height based on resolution
