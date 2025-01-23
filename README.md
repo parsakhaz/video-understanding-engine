@@ -118,6 +118,7 @@ python main.py video.mp4 --frame-selection --local --save --synthesis-captions
    - Requires API key
    - Faster processing
    - Higher reliability
+   - Integrates video metadata
 
 2. **Local LLM (New!)**
    - Uses Meta-Llama-3.1-8B-Instruct
@@ -126,6 +127,8 @@ python main.py video.mp4 --frame-selection --local --save --synthesis-captions
    - Automatic fallback to hosted LLM
    - ~8GB GPU memory required
    - Compatible response format
+   - Supports metadata context
+   - Chunk-level metadata integration
 
 ## Architecture Overview
 
@@ -133,6 +136,7 @@ python main.py video.mp4 --frame-selection --local --save --synthesis-captions
 graph TD
     A[Input Video] --> B[Frame Selection]
     A --> C[Audio Processing]
+    A --> MD[Metadata Extraction]
     
     subgraph "Frame Selection Pipeline"
     B --> D[CLIP Embeddings]
@@ -151,6 +155,12 @@ graph TD
     AB --> J
     end
     
+    subgraph "Metadata Pipeline"
+    MD --> ME[FFprobe Extraction]
+    ME --> MF[Parse Metadata]
+    MF --> MG[Format Context]
+    end
+    
     F --> L[Selected Frames]
     G --> L
     L --> M[Moondream VLM]
@@ -158,6 +168,7 @@ graph TD
     
     J --> O[Content Synthesis]
     N --> O
+    MG --> O
     
     subgraph "Summarization Pipeline"
     O --> P{Model Selection}
@@ -283,10 +294,14 @@ video-understanding-engine/
 
 1. **Video Input Processing**
    - Input: Video file
-   - Output: Frame data and audio stream
+   - Output: Frame data, audio stream, and metadata
    - Supported formats: MP4, AVI, MOV, MKV
    - Maximum recommended length: 6-8 minutes
    - Automatic audio stream detection
+   - Metadata extraction using ffprobe:
+     - Title, artist, duration
+     - Format tags and properties
+     - Custom metadata fields
 
 2. **Frame Selection** (when using `--frame-selection`)
    - Model: CLIP (ViT-SO400M-14-SigLIP-384)
@@ -328,11 +343,18 @@ video-understanding-engine/
    - Input: 
      - Timestamped transcript
      - Frame descriptions
+     - Video metadata context
+   - Process:
+     1. Extract and format metadata context
+     2. For long videos:
+        - Process chunks with metadata context
+        - Generate chunk summaries
+        - Create final summary with metadata
+     3. For short videos:
+        - Direct synthesis with metadata context
    - Output:
-     - Comprehensive video summary
-     - Dynamic number of synthesized captions:
-       - Long videos (>2.5 min): 1/4 of keyframes
-       - Short videos: 2/3 of keyframes (capped at 100)
+     - Metadata-enriched video summary
+     - Dynamic number of synthesized captions
    - Strict XML format with validation
    - Error handling with fallback to frame descriptions
    - Token limit: 4096 tokens
@@ -554,6 +576,15 @@ When using `--save`, outputs are saved in `logs/` with the following structure:
 {
     "video_path": "path/to/video",
     "frame_count": 1000,
+    "metadata": {
+        "title": "Video Title",
+        "artist": "Creator Name",
+        "duration": 120.5,
+        "format_tags": {
+            "key1": "value1",
+            "key2": "value2"
+        }
+    },
     "transcript": [
         {
             "start": 0.0,
@@ -570,7 +601,16 @@ When using `--save`, outputs are saved in `logs/` with the following structure:
         }
     ],
     "summary": "Final video summary...",
-    "total_run_time": 120.5
+    "total_run_time": 120.5,
+    "synthesis": {
+        "raw_output": "Raw synthesis output with XML tags",
+        "captions": [
+            {
+                "timestamp": 0.0,
+                "text": "Caption text..."
+            }
+        ]
+    }
 }
 ```
 
