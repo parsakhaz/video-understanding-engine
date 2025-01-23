@@ -19,58 +19,10 @@ from frame_selection import process_video
 import gradio as gr
 import subprocess
 import re
-from pydub import AudioSegment
-from pydub.silence import detect_nonsilent
 from difflib import SequenceMatcher
 import ast
 from transformers import pipeline
-# Function to trim silence from audio
-def trim_silence(audio_path, min_silence_len=1000, silence_thresh=-55, offset=0):
-    """
-    Trims silence from the beginning and end of an audio file.
-    
-    Args:
-        audio_path: Path to the audio file
-        min_silence_len: Minimum length of silence (in ms) to detect
-        silence_thresh: Silence threshold in dB
-        offset: Number of milliseconds to keep before and after non-silent sections
-    
-    Returns:
-        Tuple of (trimmed_audio_path, start_offset_seconds)
-    """
-    try:
-        # Load audio file
-        audio = AudioSegment.from_file(audio_path)
-        
-        # Find non-silent sections
-        nonsilent_ranges = detect_nonsilent(
-            audio,
-            min_silence_len=min_silence_len,
-            silence_thresh=silence_thresh
-        )
-        
-        if not nonsilent_ranges:
-            print("No non-silent sections found, returning original audio")
-            return audio_path, 0
-            
-        # Get start and end times
-        start_trim = max(0, nonsilent_ranges[0][0] - offset)
-        end_trim = min(len(audio), nonsilent_ranges[-1][1] + offset)
-        
-        # Calculate the start offset in seconds
-        start_offset_seconds = start_trim / 1000.0  # Convert ms to seconds
-        
-        # Trim the audio
-        trimmed_audio = audio[start_trim:end_trim]
-        
-        # Save trimmed audio
-        output_path = audio_path.rsplit('.', 1)[0] + '_trimmed.' + audio_path.rsplit('.', 1)[1]
-        trimmed_audio.export(output_path, format=audio_path.rsplit('.', 1)[1])
-        
-        return output_path, start_offset_seconds
-    except Exception as e:
-        print(f"Error trimming silence: {str(e)}")
-        return audio_path, 0
+import whisper
 
 def similar(a, b, threshold=0.90):
     """Return True if strings are similar above threshold."""
@@ -137,24 +89,73 @@ def clean_transcript(segments):
         "text": ""
     }]
 
-# Function to transcribe audio from a video file using Whisper model
-def transcribe_video(video_path, trim_silence_enabled=False):
-    print(f"Loading audio model")
-
-    # Get video duration using ffprobe
+def get_video_duration(video_path):
+    """Get video duration using ffprobe."""
     try:
-        duration_cmd = [
+        cmd = [
             'ffprobe', 
             '-v', 'error',
             '-show_entries', 'format=duration',
             '-of', 'default=noprint_wrappers=1:nokey=1',
             video_path
         ]
-        video_duration = float(subprocess.check_output(duration_cmd).decode().strip())
-        print(f"Video duration: {video_duration:.2f} seconds")
+        duration = float(subprocess.check_output(cmd).decode().strip())
+        print(f"Video duration: {duration:.2f} seconds")
+        return duration
     except Exception as e:
         print(f"Warning: Could not get video duration: {str(e)}")
-        video_duration = None
+        return None
+
+def extract_audio(video_path):
+    """Extract audio from video to MP3."""
+    audio_path = os.path.join('outputs', f'temp_audio_{int(time.time())}.mp3')
+    os.makedirs('outputs', exist_ok=True)
+    
+    try:
+        cmd = [
+            'ffmpeg', '-y',
+            '-i', video_path,
+            '-vn',  # No video
+            audio_path
+        ]
+        subprocess.run(cmd, check=True)
+        return audio_path
+    except Exception as e:
+        print(f"Error extracting audio: {str(e)}")
+        return None
+
+def process_transcript(segments):
+    """Convert Whisper segments to our transcript format."""
+    processed_transcript = []
+    
+    for segment in segments:
+        start = segment.get("start")
+        end = segment.get("end")
+        text = segment.get("text", "").strip()
+        
+        if start is None or end is None or not text:
+            continue
+            
+        processed_transcript.append({
+            "start": start,
+            "end": end,
+            "text": text
+        })
+    
+    return processed_transcript
+
+# Function to transcribe audio from a video file using Whisper model
+def transcribe_video(video_path):
+    print(f"Loading audio model")
+
+    # Get video duration using ffprobe
+    duration = get_video_duration(video_path)
+    if duration is None:
+        return [{
+            "start": 0,
+            "end": 0,
+            "text": ""
+        }]
 
     # Check if video has an audio stream using ffprobe
     has_audio = False
@@ -179,122 +180,60 @@ def transcribe_video(video_path, trim_silence_enabled=False):
         }]
 
     # Extract audio from video
-    audio_path = os.path.join('outputs', f'temp_audio_{int(time.time())}.mp3')
-    os.makedirs('outputs', exist_ok=True)
+    audio_path = extract_audio(video_path)
+    if not audio_path:
+        print("Failed to extract audio")
+        return [{
+            "start": 0,
+            "end": 0,
+            "text": ""
+        }]
     
     try:
-        # Simple audio extraction to MP3
-        extract_cmd = [
-            'ffmpeg', '-y',
-            '-i', video_path,
-            '-vn',  # No video
-            audio_path
-        ]
-        subprocess.run(extract_cmd, check=True)
+        # Load Whisper model
+        print("Loading Whisper model...")
+        model = whisper.load_model("large")
         
-        # Optionally trim silence
-        if trim_silence_enabled:
-            trimmed_audio_path, start_offset_seconds = trim_silence(
-                audio_path,
-                min_silence_len=5000,
-                silence_thresh=-105,
-                offset=100
-            )
-            print(f"Trimmed {start_offset_seconds:.2f} seconds of silence from start")
-        else:
-            trimmed_audio_path = audio_path
-            start_offset_seconds = 0
-
-        try:
-            # Setup device
-            device = "cuda:0" if torch.cuda.is_available() else "cpu"
-            print(f"Using device: {device}")
+        print("Transcribing audio...")
+        
+        # Run transcription
+        result = model.transcribe(audio_path)
+        
+        # Save raw output for debugging
+        timestamp = int(time.time())
+        raw_output_path = os.path.join('outputs', f'whisper_raw_{timestamp}.txt')
+        
+        # Save raw output with detailed information
+        with open(raw_output_path, 'w', encoding='utf-8') as f:
+            f.write("=== RAW WHISPER OUTPUT ===\n\n")
+            f.write(f"Video path: {video_path}\n")
+            f.write(f"Video duration: {duration:.2f}s\n")
+            f.write(f"Timestamp: {timestamp}\n")
+            f.write("\n=== FULL RESULT ===\n")
+            f.write(json.dumps(result, indent=2, ensure_ascii=False))
+        
+        print(f"\nRaw output saved to: {raw_output_path}")
+        
+        # Process segments
+        processed_transcript = process_transcript(result["segments"])
+        
+        # Clean up the transcript
+        return clean_transcript(processed_transcript)
             
-            # Create pipeline
-            pipe = pipeline(
-                task="automatic-speech-recognition",
-                model="openai/whisper-large-v3-turbo",
-                device=device,
-            )
-            
-            print(f"Audio model loaded")
-            print(f"Transcribing video")
-
-            # Run transcription
-            result = pipe(
-                trimmed_audio_path,
-                batch_size=8,
-                return_timestamps=True,
-                generate_kwargs={"task": "transcribe"}
-            )
-
-            # Convert pipeline output format to our expected format
-            timestamped_transcript = []
-            for chunk in result.get("chunks", []):
-                try:
-                    # Get timestamp with more robust error handling
-                    timestamp = chunk.get("timestamp")
-                    if timestamp is None or not isinstance(timestamp, (list, tuple)) or len(timestamp) != 2:
-                        print(f"Warning: Invalid timestamp format in chunk: {timestamp}")
-                        continue
-                        
-                    start, end = timestamp
-                    if start is None:
-                        print(f"Warning: None value for start timestamp")
-                        continue
-
-                    # Handle null end timestamp for final chunk
-                    if end is None:
-                        if video_duration is not None:
-                            print(f"Adjusting null end timestamp to video duration: {video_duration:.2f}s")
-                            end = video_duration
-                        else:
-                            print(f"Warning: Cannot fix null end timestamp - no video duration available")
-                            continue
-                        
-                    text = chunk.get("text", "").strip()
-                    if not text:  # Skip empty text chunks
-                        continue
-                        
-                    timestamped_transcript.append({
-                        "start": float(start) + start_offset_seconds,
-                        "end": float(end) + start_offset_seconds,
-                        "text": text
-                    })
-                except Exception as e:
-                    print(f"Warning: Error processing chunk: {str(e)}")
-                    continue
-            
-            if not timestamped_transcript:  # If no valid chunks were found
-                timestamped_transcript = [{
-                    "start": 0,
-                    "end": 0,
-                    "text": ""
-                }]
-                
-        except Exception as e:
-            print(f"Error transcribing video: {str(e)}")
-            timestamped_transcript = [{
-                "start": 0,
-                "end": 0,
-                "text": ""
-            }]
     except Exception as e:
-        print(f"Error processing audio: {str(e)}")
-        timestamped_transcript = [{
+        print(f"Error during transcription: {str(e)}")
+        return [{
             "start": 0,
             "end": 0,
             "text": ""
         }]
     finally:
-        # Clean up temporary audio files
+        # Clean up temporary files
         try:
             if os.path.exists(audio_path):
                 os.remove(audio_path)
         except Exception as e:
             print(f"Error cleaning up temporary files: {str(e)}")
-
-    return timestamped_transcript
 
 # Function to describe frames using a Vision-Language Model
 def describe_frames(video_path, frame_numbers):
@@ -613,7 +552,7 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
             user_content = f"<transcript>\n{timestamped_transcript}\n</transcript>\n\n<frame_descriptions>\n{frame_descriptions}\n</frame_descriptions>"
             
             # Get completion for this chunk with retries
-            max_retries = 3
+            max_retries = 5  # Increased from 3 to 5
             for attempt in range(max_retries):
                 print(f"\nAttempt {attempt + 1}/{max_retries} to get completion...")
                 completion = get_llm_completion(synthesis_prompt, user_content, use_local_llm=use_local_llm)
@@ -626,7 +565,7 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
                         continue
                     else:
                         print("Failed all attempts to get completion")
-                        return None
+                        return None, None
                 
                 print("\nGot completion, attempting to parse...")
                 chunk_summary, chunk_captions = parse_synthesis_output(completion)
@@ -665,7 +604,10 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
         
         chunk_summaries_content = "\n\n".join([f"Chunk {i+1}:\n{summary}" for i, summary in enumerate(all_summaries)])
         final_summary_content = f"<chunk_summaries>\n{chunk_summaries_content}\n</chunk_summaries>"
+
         # Get final summary with retries
+        max_retries = 5  # Increased from 3 to 5
+        final_summary = None
         for attempt in range(max_retries):
             print(f"\nAttempt {attempt + 1}/{max_retries} to get final summary...")
             final_summary = get_llm_completion(final_summary_prompt, final_summary_content, use_local_llm=use_local_llm)
@@ -676,7 +618,10 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
                 time.sleep(2 * (attempt + 1))
             else:
                 print("\nFailed to generate final summary after multiple attempts.")
-                return None
+                return None, None
+
+        if not final_summary:
+            return None, None
         
         # Create final synthesis format with the new summary
         final_output = f"<summary>\n{final_summary}\n</summary>\n\n<captions>\n"
@@ -684,7 +629,13 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
             final_output += f"<caption>[{timestamp:.1f}] {text}</caption>\n"
         final_output += "</captions>"
         
-        return final_output
+        # Parse the final output to verify it's valid and extract captions
+        summary, captions = parse_synthesis_output(final_output)
+        if not summary or not captions:
+            print("\nFailed to parse final synthesis output")
+            return None, None
+            
+        return final_output, captions
     else:
         # Original logic for short videos with retries
         synthesis_prompt = get_synthesis_prompt(len(descriptions), is_long_video=False)
@@ -692,7 +643,7 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
         frame_descriptions = "\n".join([f"[{timestamp:.2f}s] Frame {frame}: {desc}" for frame, timestamp, desc in descriptions])
         user_content = f"<transcript>\n{timestamped_transcript}\n</transcript>\n\n<frame_descriptions>\n{frame_descriptions}\n</frame_descriptions>"
         
-        max_retries = 3
+        max_retries = 5  # Increased from 3 to 5
         for attempt in range(max_retries):
             print(f"\nAttempt {attempt + 1}/{max_retries} to get completion...")
             completion = get_llm_completion(synthesis_prompt, user_content, use_local_llm=use_local_llm)
@@ -705,13 +656,13 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
                     continue
                 else:
                     print("Failed all attempts to get completion")
-                    return None
+                    return None, None
             
             print("\nGot completion, attempting to parse...")
             summary, captions = parse_synthesis_output(completion)
             
             if summary and captions:
-                return completion
+                return completion, captions
             else:
                 if attempt < max_retries - 1:
                     print(f"\nRetrying synthesis generation (attempt {attempt + 2}/{max_retries})...")
@@ -719,7 +670,7 @@ def summarize_with_hosted_llm(transcript, descriptions, use_local_llm=False):
                 else:
                     print(f"\nFailed to generate synthesis after {max_retries} attempts.")
                     print("Falling back to frame descriptions.")
-                    return None
+                    return None, None
 
 def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -> str:
     """Helper function to get LLM completion with error handling."""
@@ -816,7 +767,7 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable is not set. Please set it in your .env file or environment.")
 
-        max_retries = 3
+        max_retries = 5
         retry_delay = 1
         
         for attempt in range(max_retries):
@@ -1354,23 +1305,29 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
 
     # Generate summary and captions
     print("Generating video summary...")
-    synthesis_output = summarize_with_hosted_llm(transcript, descriptions, use_local_llm=use_local_llm)
-    summary, synthesis_captions = parse_synthesis_output(synthesis_output)
+    synthesis_output, synthesis_captions = summarize_with_hosted_llm(transcript, descriptions, use_local_llm=use_local_llm)
     
-    if use_synthesis_captions and (synthesis_captions is None or len(synthesis_captions) == 0):
-        print("\nError: Failed to generate synthesis captions. Please try again or use frame descriptions.")
-        return "Error: Failed to generate synthesis captions. Please try again or use frame descriptions.", None, None
+    if synthesis_output is None or (use_synthesis_captions and synthesis_captions is None):
+        print("\nError: Failed to generate synthesis. Please try again.")
+        return "Error: Failed to generate synthesis. Please try again.", None, None
     
+    # Extract summary from synthesis output
+    summary_match = re.search(r'<summary>(.*?)</summary>', synthesis_output, re.DOTALL)
+    if not summary_match:
+        print("\nError: Failed to extract summary from synthesis output")
+        return "Error: Failed to extract summary from synthesis output.", None, None
+    
+    summary = summary_match.group(1).strip()
     print(f"Summary generation complete. Generated {len(synthesis_captions) if synthesis_captions else 0} synthesis captions.")
 
     # Create captioned video with summary intro
     output_video_path = create_captioned_video(
         video_path, 
         descriptions, 
-        summary,
+        summary,  # Pass just the summary text
         transcript,
         synthesis_captions,
-        use_synthesis_captions  # Make sure this flag is passed through
+        use_synthesis_captions
     )
 
     total_run_time = time.time() - start_time

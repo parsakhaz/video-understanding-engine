@@ -18,8 +18,6 @@
   - [Accessibility Features](#accessibility-features)
   - [Content Synthesis Options](#content-synthesis-options)
 - [Architecture Overview](#architecture-overview)
-- [Process Sequence](#process-sequence)
-- [Directory Structure](#directory-structure)
 - [Process Flow](#process-flow)
 - [Installation](#installation)
 - [Usage](#usage)
@@ -63,14 +61,14 @@ python main.py video.mp4
 python main.py --web
 
 # Run with all features enabled (including local LLM)
-python main.py video.mp4 --frame-selection --local --save
+python main.py video.mp4 --frame-selection --local --save --synthesis-captions
 ```
 
 ## Features
 
 ### Core Features
 - Intelligent frame selection using CLIP embeddings and clustering
-- High-quality audio transcription using Whisper large-v3-turbo with chunked processing
+- High-quality audio transcription using Whisper large-v3-turbo
 - Visual scene description using Moondream2
 - Dynamic content synthesis with GPT-4o/Llama 3.1
 - Interactive web interface
@@ -79,7 +77,7 @@ python main.py video.mp4 --frame-selection --local --save
 
 ### Video Output Features
 - Intelligent frame descriptions with timestamps
-- High-accuracy speech transcription with chunked processing
+- High-accuracy speech transcription
 - Adaptive text wrapping and positioning
 - Accessibility-focused caption design
 - Choice between detailed or synthesized captions
@@ -95,7 +93,7 @@ python main.py video.mp4 --frame-selection --local --save
 2. **Synthesis Captions** (Highly recommended)
    - Context-aware, narrative-focused captions
    - Dynamic quantity based on video length
-   - Automatic deduplication of close captions (< 2.5s apart)
+   - Automatic deduplication of close captions (< 1.2s apart)
    - Better for storytelling and overview
    - Clean text without timestamps
 
@@ -148,11 +146,8 @@ graph TD
     C --> AA[Audio Stream Check]
     AA -->|Has Audio| AE[Audio Extraction]
     AA -->|No Audio| AB[Empty Transcript]
-    AE --> AF[Silence Detection]
-    AF --> AG[Silence Trimming]
-    AG --> I[Whisper large-v3-turbo]
-    I --> AH[Timestamp Adjustment]
-    AH --> J[Timestamped Transcript]
+    AE --> I[Whisper large-v3-turbo]
+    I --> J[Timestamped Transcript]
     AB --> J
     end
     
@@ -191,7 +186,7 @@ graph TD
     end
 ```
 
-## Process Sequence
+## Process Flow
 
 ```mermaid
 sequenceDiagram
@@ -224,15 +219,12 @@ sequenceDiagram
     and Audio Processing
         Main->>AudioProc: extract_audio()
         activate AudioProc
-        AudioProc->>AudioProc: detect_silence()
-        Note over AudioProc: threshold=-40dB<br/>min_length=1000ms
-        AudioProc->>AudioProc: trim_silence()
-        AudioProc->>AudioProc: calculate_offset()
-        AudioProc-->>Main: trimmed_audio, offset
+        AudioProc->>AudioProc: Check audio stream
+        AudioProc-->>Main: audio_path
         deactivate AudioProc
-        Main->>Whisper: pipeline(task="automatic-speech-recognition")
+        Main->>Whisper: model.transcribe(audio_path)
         activate Whisper
-        Note over Whisper: chunk_length_s=30<br/>batch_size=8<br/>fp16 precision<br/>return_timestamps=True
+        Note over Whisper: Raw MP3 input<br/>No preprocessing<br/>Direct transcription
         Whisper-->>Main: timestamped_transcript
         deactivate Whisper
     end
@@ -594,6 +586,7 @@ Plot interpretation:
 
 ## Requirements
 
+### Hardware Requirements
 - Python 3.10+
 - CUDA-compatible GPU (recommended)
 - Minimum 16GB RAM
@@ -626,19 +619,11 @@ Plot interpretation:
 2. **Model Loading**
    - Models are loaded/unloaded to manage memory
    - GPU memory requirements:
-     - Whisper: ~5GB
+     - Whisper large-v3-turbo: ~4GB
      - Moondream: ~4GB
      - Llama (if local): ~8GB
      - CLIP: ~2GB
    - Total peak memory: ~12GB (with local LLM)
-
-3. **Processing Time**
-   - Varies with video length and options
-   - Example times (5-minute video):
-     - Basic: ~5-10 minutes
-     - With frame selection: ~15-20 minutes
-     - With local LLM: ~25-30 minutes
-   - Scaling: Approximately linear with video length
 
 ## Troubleshooting
 
@@ -653,56 +638,58 @@ Plot interpretation:
   - Smart timestamp selection using earliest scene detection
   - Minimum 1.2s gap between captions
   - Automatic audio stream detection
-- **NEW: Upgraded to Whisper large-v3-turbo**
-  - Switched from OpenAI Whisper client to Hugging Face Transformers pipeline
-  - Using fp16 precision for better performance
-  - Chunked processing (30s) for efficient long-form transcription
-  - Batch processing (size=8) for faster inference
-  - Improved transcription quality with latest model
-  - Removed need for post-processing and cleaning
-  - Native timestamp support
+- **NEW: Simplified Audio Pipeline**
+  - Removed all audio manipulation logic for better reliability
+  - Direct MP3 extraction from video
+  - Raw MP3 passed to Whisper model
+  - Cleaner transcription results
+  - Reduced complexity and potential failure points
+  - Better handling of audio streams
 
-### Visual enhancements:
-- Resolution-based font scaling (SD/HD/2K+)
-- Improved contrast with semi-transparent overlays (70% opacity)
-- Centered transcript text with individual boxes
-- Dynamic padding and margins based on resolution
+### Synthesis Improvements
+- **NEW: Enhanced Retry Logic**
+  - Increased retry attempts from 3 to 5 for all synthesis operations
+  - Better exponential backoff timing
+  - Improved error handling and recovery
+  - Separate retries for:
+    - Chunk synthesis
+    - Final summary generation
+    - Short video synthesis
+    - API calls
+  - More reliable caption generation
+  - Better handling of synthesis failures
 
-### Requirements
+### Technical Improvements
+- **NEW: Better Summary Extraction**
+  - Improved parsing of synthesis output
+  - Proper extraction of summary from XML format
+  - Cleaner logging of summaries
+  - Fixed summary display in web interface
+  - Better error messages for synthesis failures
+  - Proper validation of output format
 
-- Python 3.10+
-- CUDA-compatible GPU (recommended)
-- Minimum 16GB RAM
-- Storage:
-  - ~10GB for models
-  - Additional space for video processing
-- FFmpeg (for video processing)
-- Internet connection (for hosted LLM)
+## Advanced Features & Limitations
 
-### Key Dependencies
-- `torch`: GPU acceleration
-- `transformers`: Whisper large-v3-turbo and LLM models
-- `open_clip`: Frame analysis
-- `gradio`: Web interface
-- `opencv-python`: Video processing
-- `numpy`: Numerical operations
-- `matplotlib`: Visualization
-- See `requirements.txt` for complete list
+### Hallucination Detection Parameters
+- Detection threshold: 0.08 words/second
+- Minimum skip: 10 frames
+- Number of clusters: 15
 
-## Performance Considerations
+### Transcript Cleaning System
+- Automatic removal of non-speech segments
+- Post-processing for better transcription quality
 
-1. **Frame Selection**
-   - CLIP embeddings are cached in `embedding_cache/`
-   - First run on a video will be slower
-   - Subsequent runs use cached embeddings
-   - Cache format: NumPy arrays (.npy)
-   - Cache size: ~2MB per minute of video
+### Caption Timing Specifications
+- Predictive caption timing: 0.5s early display
+- Minimum 1.2s gap between captions
 
-2. **Model Loading**
-   - Models are loaded/unloaded to manage memory
-   - GPU memory requirements:
-     - Whisper large-v3-turbo: ~4GB
-     - Moondream: ~4GB
-     - Llama (if local): ~8GB
-     - CLIP: ~2GB
-   - Total peak memory: ~12GB (with local LLM)
+### Error Recovery System
+- Fallback to frame descriptions if synthesis fails
+- Smart handling of caption timing edge cases
+
+### Resolution-based Adaptations
+- Adaptive font scaling based on video resolution
+
+### Video Processing Limitations
+- Maximum recommended video length: 6-8 minutes
+- Automatic audio stream detection
