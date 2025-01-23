@@ -479,15 +479,15 @@ def get_synthesis_prompt(num_keyframes: int, video_duration: float) -> str:
     return f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions. You MUST follow the exact format specified below.
 
 Output Format:
-1. A summary section wrapped in <summary></summary> tags. The summary MUST start with "The video presents" to maintain consistent style. 
-  - The video summary never refers to frames as "stills" or "images" - they are frames from a continuous sequence.
+1. A summary section wrapped in <summary></summary> tags. The summary MUST start with "This video presents" to maintain consistent style. 
+  - This video summary never refers to frames as "stills" or "images" - they are frames from a continuous sequence.
 2. A captions section wrapped in <captions></captions> tags
 3. Exactly {num_captions} individual captions, each wrapped in <caption></caption> tags
 4. Each caption MUST start with a timestamp in square brackets, e.g. [2.5]
 
 Example format:
 <summary>
-The video presents a [the high level action or narrative that takes place over the frames] in a [location], where [action/assumptions]...
+This video presents a [the high level action or narrative that takes place over the frames] in a [location], where [action/assumptions]...
 </summary>
 
 <captions>
@@ -525,13 +525,13 @@ Frame Description Guidelines:
 5. Remember that gaps may exist between frames, so avoid assuming continuity.
 
 Requirements for Summary:
-1. IMPORTANT: Always start with "The video presents" to maintain consistent style
-2. Provide a clear overview of the video's main content and purpose
+1. IMPORTANT: Always start with "This video presents" to maintain consistent style
+2. Provide a clear overview of this video's main content and purpose
 3. Include key events and settings without attributing actions to specific people
 4. Integrate both visual and audio information while avoiding assumptions
 5. Keep it concise (3-5 sentences)
-6. Use transcript information to establish the video's context and purpose
-7. Cross-reference transcript for useful context and understanding of emotions associated with the video
+6. Use transcript information to establish this video's context and purpose
+7. Cross-reference transcript for useful context and understanding of emotions associated with this video
 8. Focus on clearly visible elements rather than interpretations
 
 Requirements for Captions:
@@ -542,7 +542,7 @@ Requirements for Captions:
    - Be 20-50 words long
    - Focus on observable events and context
    - Avoid attributing speech or actions unless explicitly clear
-3. Timestamps should be reasonably spaced throughout the video
+3. Timestamps should be reasonably spaced throughout this video
 4. Focus on what is definitively shown or heard, not assumptions
 5. IMPORTANT: When multiple frames describe the same scene or action, use the EARLIEST timestamp
 6. Default to neutral terms like "a person" or "someone" when identities are unclear
@@ -551,7 +551,7 @@ Requirements for Captions:
 
 Input sections:
 <transcript>
-Timestamped transcript of the video
+Timestamped transcript of this video
 </transcript>
 
 <frame_descriptions>
@@ -680,10 +680,10 @@ def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, u
         # Make a final pass to synthesize all summaries into one coherent summary
         print("\nSynthesizing final summary...")
         final_summary_prompt = """You are tasked with synthesizing multiple summaries and transcript segments from different parts of a single video into one coherent, comprehensive summary of the entire video.
-        The frame and scene summaries, along with transcript segments, are presented in chronological order. The video is never photos, any mentions of photos are incorrect and hallucinations.
+        The frame and scene summaries, along with transcript segments, are presented in chronological order. This video does not contain photos, any mentions of photos are incorrect and hallucinations.
         
         Output a single overall summary of all the frames, scenes, and dialogue that:
-        1. Always starts with "The video presents" to maintain consistent style.
+        1. Always starts with "This video presents" to maintain consistent style.
         2. Captures the main narrative arc, inferring the most likely high level overview and theme with the given information, along with emotions and feelings.
         3. Maintains a clear and concise flow
         4. Is roughly the same length as one of the input summaries
