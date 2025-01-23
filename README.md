@@ -466,7 +466,7 @@ python main.py <video_path>
 
 Advanced options:
 ```bash
-python main.py <video_path> [--save] [--local] [--frame-selection] [--web] [--synthesis-captions]
+python main.py <video_path> [--save] [--local] [--frame-selection] [--web] [--synthesis-captions] [--transcribe]
 ```
 
 Options explained:
@@ -475,20 +475,24 @@ Options explained:
 - `--frame-selection`: Use CLIP-based intelligent frame selection
 - `--web`: Launch web interface (highly recommended)
 - `--synthesis-captions`: Use synthesized narrative captions (recommended for better viewing experience)
+- `--transcribe`: Show speech transcriptions in the output video (optional, transcripts are still generated for captions)
 
 Example commands:
 ```bash
 # Launch web interface (recommended for single video processing, easy to use)
 python main.py --web
 
-# Process single video with all features
-python main.py video.mp4 --frame-selection --local --save --synthesis-captions
+# Process single video with all features including transcriptions
+python main.py video.mp4 --frame-selection --local --save --synthesis-captions --transcribe
 
-# Process all videos in a folder
-python main.py /path/to/folder
+# Process video with captions but without visible transcriptions
+python main.py video.mp4 --frame-selection --synthesis-captions
+
+# Process all videos in a folder with transcriptions
+python main.py /path/to/folder --frame-selection --transcribe
 
 # Process 'inputs' folder with all features
-python main.py inputs --frame-selection --local --save --synthesis-captions
+python main.py inputs --frame-selection --local --save --synthesis-captions --transcribe
 
 # Quick processing with hosted LLM and synthesis captions
 python main.py video.mp4 --save --synthesis-captions

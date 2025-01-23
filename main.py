@@ -922,7 +922,7 @@ def create_summary_clip(summary: str, width: int, height: int, fps: int) -> str:
     out.release()
     return temp_summary_path, duration
 
-def create_captioned_video(video_path: str, descriptions: list, summary: str, transcript: list, synthesis_captions: list = None, use_synthesis_captions: bool = False, output_path: str = None) -> str:
+def create_captioned_video(video_path: str, descriptions: list, summary: str, transcript: list, synthesis_captions: list = None, use_synthesis_captions: bool = False, show_transcriptions: bool = False, output_path: str = None) -> str:
     """Create a video with persistent captions from keyframe descriptions and transcriptions."""
     print("\nCreating captioned video...")
     
@@ -1076,8 +1076,8 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             if current_line:
                 top_lines.append(' '.join(current_line))
 
-            # If we have speech transcription, add bottom overlay
-            if current_transcript_text:  # Changed from bottom_lines check to current_transcript_text
+            # If we have speech transcription and transcriptions should be shown, add bottom overlay
+            if current_transcript_text and show_transcriptions:  # Modified condition
                 # Normalize smart quotes and apostrophes in transcript
                 current_transcript_text = current_transcript_text.replace('"', '"').replace('"', '"')
                 current_transcript_text = current_transcript_text.replace("'", "'").replace("'", "'")
@@ -1273,12 +1273,13 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
     print(f"\nCaptioned video saved to: {web_output}")
     return web_output
 
-def process_video_web(video_file, use_frame_selection=False, use_synthesis_captions=False, use_local_llm=False):
+def process_video_web(video_file, use_frame_selection=False, use_synthesis_captions=False, use_local_llm=False, show_transcriptions=False):
     """Process video through web interface."""
     video_path = video_file.name
     print(f"Processing video: {video_path}")
     print(f"Using synthesis captions: {use_synthesis_captions}")
     print(f"Using local LLM: {use_local_llm}")
+    print(f"Showing transcriptions: {show_transcriptions}")
 
     start_time = time.time()
 
@@ -1327,7 +1328,8 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
         summary,  # Pass just the summary text
         transcript,
         synthesis_captions,
-        use_synthesis_captions
+        use_synthesis_captions,
+        show_transcriptions
     )
 
     total_run_time = time.time() - start_time
@@ -1461,7 +1463,8 @@ def process_folder(folder_path, args):
                     type('VideoFile', (), {'name': video_path})(),
                     use_frame_selection=args.frame_selection,
                     use_synthesis_captions=args.synthesis_captions,
-                    use_local_llm=args.local
+                    use_local_llm=args.local,
+                    show_transcriptions=args.transcribe
                 )
                 
                 print(f"Successfully processed {video_file}")
@@ -1485,6 +1488,7 @@ def main():
     parser.add_argument('--frame-selection', action='store_true', help='Use CLIP-based key frame selection algorithm')
     parser.add_argument('--web', action='store_true', help='Start Gradio web interface')
     parser.add_argument('--synthesis-captions', action='store_true', help='Use synthesized narrative captions (recommended)')
+    parser.add_argument('--transcribe', action='store_true', help='Show speech transcriptions in the output video')
     args = parser.parse_args()
 
     if args.web:
@@ -1495,7 +1499,8 @@ def main():
                 gr.File(label="Upload Video"),
                 gr.Checkbox(label="Use Frame Selection", value=True, info="Recommended: Intelligently selects key frames"),
                 gr.Checkbox(label="Use Synthesis Captions", value=True, info="Recommended: Creates a more pleasant viewing experience"),
-                gr.Checkbox(label="Use Local LLM", value=True, info="Use local Llama model instead of OpenAI API (requires model weights)")
+                gr.Checkbox(label="Use Local LLM", value=True, info="Use local Llama model instead of OpenAI API (requires model weights)"),
+                gr.Checkbox(label="Show Transcriptions", value=False, info="Show speech transcriptions in the output video")
             ],
             outputs=[
                 gr.Video(label="Captioned Video"),
@@ -1528,7 +1533,8 @@ def main():
                 type('VideoFile', (), {'name': args.path})(),
                 use_frame_selection=args.frame_selection,
                 use_synthesis_captions=args.synthesis_captions,
-                use_local_llm=args.local
+                use_local_llm=args.local,
+                show_transcriptions=args.transcribe
             )
             
             # Print the summary and processing time
