@@ -64,8 +64,11 @@ huggingface-cli login
 # Run with web interface (recommended)
 python main.py --web
 
-# Run with all features enabled (including local LLM)
+# Run with all features enabled (including local LLM) on 'video.mp4'
 python main.py video.mp4 --frame-selection --local --save --synthesis-captions --transcribe --debug
+
+# Run with all features enabled (including local LLM) on 'inputs' folder
+python main.py inputs --frame-selection --local --save --synthesis-captions --transcribe --debug
 ```
 
 ## Features
