@@ -1091,12 +1091,13 @@ def create_summary_clip(summary: str, width: int, height: int, fps: int, debug: 
     # Create black frame
     frame = np.zeros((height, width, 3), dtype=np.uint8)
     
-    # Add attribution text - now at bottom middle with smaller font
+    # Add attribution text - now at bottom middle with adjusted font size
     attribution = "Local Video Understanding Engine - powered by Moondream 2B, CLIP, LLama 3.1 8b Instruct, and Whisper Large"
     if debug:
         attribution = "DEBUG " + attribution
     font = cv2.FONT_HERSHEY_SIMPLEX
-    attr_font_scale = min(height * 0.015 / 20, 0.4)  # Smaller font for attribution
+    # Increased font scale for attribution
+    attr_font_scale = min(height * 0.02 / 20, 0.6)  # Increased from 0.015 to 0.02
     
     # Calculate text size and position for centering
     (text_width, text_height), _ = cv2.getTextSize(attribution, font, attr_font_scale, 1)
@@ -1119,7 +1120,8 @@ def create_summary_clip(summary: str, width: int, height: int, fps: int, debug: 
     
     # Add debug metadata if enabled
     if debug and metadata:
-        debug_font_scale = min(height * 0.015 / 20, 0.4)  # Same size as attribution
+        # Increased font scale for debug metadata
+        debug_font_scale = min(height * 0.018 / 20, 0.5)  # Increased from 0.015 to 0.018
         y_pos = 30  # Start position from top
         x_pos = 20  # Left margin
         
@@ -1903,11 +1905,12 @@ Guidelines for Recontextualization:
 4. Maintain objectivity while acknowledging the full context
 5. Don't speculate beyond what's supported by meaningful metadata
 6. Keep roughly the same length and style
-7. Your output must include <recontextualized_summary> open tags and </recontextualized_summary> close tags, with the summary content between them.
+7. Your output must include <recontextualized_summary> open tags and </recontextualized_summary> close tags, with the summary content between them. 
+8. Don't be too specific or verbose in your summary, keep it general and concise.
 
 Output Format:
 <recontextualized_summary>
-A new summary that integrates metadata context. Must start with "This video presents"
+A well-written summary that integrates metadata context. Must start with "This video presents"
 </recontextualized_summary>
 
 Input:
