@@ -1072,7 +1072,7 @@ def parse_synthesis_output(output: str) -> tuple:
         print("-" * 80)
         return None, None
 
-def create_summary_clip(summary: str, width: int, height: int, fps: int) -> str:
+def create_summary_clip(summary: str, width: int, height: int, fps: int, debug: bool = False, metadata: dict = None) -> str:
     """Create a video clip with centered summary text."""
     # Calculate duration based on reading speed (400 words/min) * 0% buffer
     word_count = len(summary.split())
@@ -1091,11 +1091,46 @@ def create_summary_clip(summary: str, width: int, height: int, fps: int) -> str:
     # Create black frame
     frame = np.zeros((height, width, 3), dtype=np.uint8)
     
-    # Add attribution text
+    # Add attribution text - now at bottom middle with smaller font
     attribution = "Local Video Understanding Engine - powered by Moondream 2B, CLIP, LLama 3.1 8b Instruct, and Whisper Large"
+    if debug:
+        attribution = "DEBUG " + attribution
     font = cv2.FONT_HERSHEY_SIMPLEX
-    attr_font_scale = min(height * 0.02 / 20, 0.6)  # Small font for attribution
-    cv2.putText(frame, attribution, (10, 20), font, attr_font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+    attr_font_scale = min(height * 0.015 / 20, 0.4)  # Smaller font for attribution
+    
+    # Calculate text size and position for centering
+    (text_width, text_height), _ = cv2.getTextSize(attribution, font, attr_font_scale, 1)
+    attr_x = (width - text_width) // 2  # Center horizontally
+    attr_y = height - 20  # 20 pixels from bottom
+    
+    # Draw attribution text
+    if debug:
+        # Draw DEBUG in red with monospace font first
+        debug_font = cv2.FONT_HERSHEY_COMPLEX_SMALL  # Using complex small for monospace-like appearance
+        debug_text = "DEBUG"
+        (debug_width, _), _ = cv2.getTextSize(debug_text, debug_font, attr_font_scale, 1)
+        # Draw DEBUG text in red
+        cv2.putText(frame, debug_text, (attr_x, attr_y), debug_font, attr_font_scale, (0, 0, 255), 1, cv2.LINE_AA)
+        # Draw the rest of the attribution after DEBUG
+        rest_text = " " + attribution[6:]  # Skip the "DEBUG " we added earlier
+        cv2.putText(frame, rest_text, (attr_x + debug_width, attr_y), font, attr_font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+    else:
+        cv2.putText(frame, attribution, (attr_x, attr_y), font, attr_font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+    
+    # Add debug metadata if enabled
+    if debug and metadata:
+        debug_font_scale = min(height * 0.015 / 20, 0.4)  # Same size as attribution
+        y_pos = 30  # Start position from top
+        x_pos = 20  # Left margin
+        
+        # Format and display metadata
+        for key, value in metadata.items():
+            if isinstance(value, float):
+                debug_text = f"{key}: {value:.2f}"
+            else:
+                debug_text = f"{key}: {value}"
+            cv2.putText(frame, debug_text, (x_pos, y_pos), font, debug_font_scale, (200, 200, 200), 1, cv2.LINE_AA)
+            y_pos += 25  # Space between lines
     
     # Prepare text
     font_scale = min(height * 0.04 / 20, 1.0)  # Slightly larger font for summary
@@ -1130,8 +1165,36 @@ def create_summary_clip(summary: str, width: int, height: int, fps: int) -> str:
     for _ in range(total_frames):
         frame = np.zeros((height, width, 3), dtype=np.uint8)
         
-        # Add attribution text to each frame
-        cv2.putText(frame, attribution, (10, 20), font, attr_font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+        # Add attribution text to each frame - at bottom middle
+        (text_width, text_height), _ = cv2.getTextSize(attribution, font, attr_font_scale, 1)
+        attr_x = (width - text_width) // 2  # Center horizontally
+        attr_y = height - 20  # 20 pixels from bottom
+        
+        # Draw attribution text
+        if debug:
+            # Draw DEBUG in red with monospace font first
+            debug_font = cv2.FONT_HERSHEY_COMPLEX_SMALL  # Using complex small for monospace-like appearance
+            debug_text = "DEBUG"
+            (debug_width, _), _ = cv2.getTextSize(debug_text, debug_font, attr_font_scale, 1)
+            # Draw DEBUG text in red
+            cv2.putText(frame, debug_text, (attr_x, attr_y), debug_font, attr_font_scale, (0, 0, 255), 1, cv2.LINE_AA)
+            # Draw the rest of the attribution after DEBUG
+            rest_text = " " + attribution[6:]  # Skip the "DEBUG " we added earlier
+            cv2.putText(frame, rest_text, (attr_x + debug_width, attr_y), font, attr_font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+        else:
+            cv2.putText(frame, attribution, (attr_x, attr_y), font, attr_font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+        
+        # Add debug metadata if enabled
+        if debug and metadata:
+            y_pos = 30  # Start position from top
+            x_pos = 20  # Left margin
+            for key, value in metadata.items():
+                if isinstance(value, float):
+                    debug_text = f"{key}: {value:.2f}"
+                else:
+                    debug_text = f"{key}: {value}"
+                cv2.putText(frame, debug_text, (x_pos, y_pos), font, debug_font_scale, (200, 200, 200), 1, cv2.LINE_AA)
+                y_pos += 25  # Space between lines
         
         y = start_y
         for line in lines:
@@ -1154,7 +1217,7 @@ def create_summary_clip(summary: str, width: int, height: int, fps: int) -> str:
     out.release()
     return temp_summary_path, duration
 
-def create_captioned_video(video_path: str, descriptions: list, summary: str, transcript: list, synthesis_captions: list = None, use_synthesis_captions: bool = False, show_transcriptions: bool = False, output_path: str = None) -> str:
+def create_captioned_video(video_path: str, descriptions: list, summary: str, transcript: list, synthesis_captions: list = None, use_synthesis_captions: bool = False, show_transcriptions: bool = False, output_path: str = None, debug: bool = False, debug_metadata: dict = None) -> str:
     """Create a video with persistent captions from keyframe descriptions and transcriptions."""
     print("\nCreating captioned video...")
     
@@ -1439,9 +1502,16 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
     video.release()
     out.release()
 
-    # Create summary intro clip
+    # Create summary intro clip with debug metadata
     print("\nCreating summary intro...")
-    summary_path, summary_duration = create_summary_clip(summary, frame_width, frame_height, fps)
+    summary_path, summary_duration = create_summary_clip(
+        summary, 
+        frame_width, 
+        frame_height, 
+        fps,
+        debug=debug,
+        metadata=debug_metadata
+    )
     
     # Create a file list for concatenation
     concat_file = os.path.join('outputs', 'concat_list.txt')
@@ -1511,13 +1581,19 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
     print(f"\nCaptioned video saved to: {web_output}")
     return web_output
 
-def process_video_web(video_file, use_frame_selection=False, use_synthesis_captions=False, use_local_llm=False, show_transcriptions=False):
+def process_video_web(video_file, use_frame_selection=False, use_synthesis_captions=False, use_local_llm=False, show_transcriptions=False, debug=False):
     """Process video through web interface."""
     video_path = video_file.name
     print(f"Processing video: {video_path}")
     print(f"Using synthesis captions: {use_synthesis_captions}")
     print(f"Using local LLM: {use_local_llm}")
     print(f"Showing transcriptions: {show_transcriptions}")
+    print(f"Debug mode: {debug}")
+
+    # Skip if this is an output file
+    if os.path.basename(video_path).startswith('captioned_') or video_path.endswith('_web.mp4'):
+        print(f"Skipping output file: {video_path}")
+        return "Skipped output file", None, None
 
     start_time = time.time()
 
@@ -1530,6 +1606,42 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
     video_duration = get_video_duration(video_path)
     if video_duration is None:
         return "Error: Could not get video duration.", None, None
+
+    # Extract metadata if in debug mode
+    debug_metadata = None
+    if debug:
+        try:
+            cmd = [
+                'ffprobe',
+                '-v', 'quiet',
+                '-print_format', 'json',
+                '-show_format',
+                '-show_streams',
+                video_path
+            ]
+            metadata_json = subprocess.check_output(cmd).decode('utf-8')
+            metadata = json.loads(metadata_json)
+            
+            # Extract relevant metadata
+            debug_metadata = {
+                'Duration': float(metadata.get('format', {}).get('duration', 0)),
+                'Size': f"{int(int(metadata.get('format', {}).get('size', 0)) / 1024 / 1024)}MB",
+                'Format': metadata.get('format', {}).get('format_name', ''),
+                'Bitrate': f"{int(int(metadata.get('format', {}).get('bit_rate', 0)) / 1024)}Kbps",
+                'Start Time': metadata.get('format', {}).get('start_time', '0'),
+            }
+            
+            # Add video stream info if available
+            video_stream = next((s for s in metadata.get('streams', []) if s.get('codec_type') == 'video'), None)
+            if video_stream:
+                debug_metadata.update({
+                    'Resolution': f"{video_stream.get('width', '')}x{video_stream.get('height', '')}",
+                    'Codec': video_stream.get('codec_name', ''),
+                    'FPS': eval(video_stream.get('r_frame_rate', '0/1')),  # Safely evaluate frame rate fraction
+                })
+        except Exception as e:
+            print(f"Error extracting debug metadata: {str(e)}")
+            debug_metadata = {'Error': 'Failed to extract metadata'}
 
     # Transcribe the video
     transcript = transcribe_video(video_path)
@@ -1578,7 +1690,9 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
         transcript,
         synthesis_captions,
         use_synthesis_captions,
-        show_transcriptions
+        show_transcriptions,
+        debug=debug,
+        debug_metadata=debug_metadata
     )
 
     total_run_time = time.time() - start_time
@@ -1601,35 +1715,24 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
     gallery_images = []
     video = cv2.VideoCapture(video_path)
     
-    # For gallery display, always use frame descriptions (not synthesis captions)
-    # This helps debug the frame selection and description process
     for frame_number, timestamp, description in descriptions:
         video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
         success, frame = video.read()
         if success:
-            # Convert BGR to RGB
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Get frame dimensions
             height, width = frame.shape[:2]
-            
-            # Calculate text parameters
-            margin = 8  # pixels from edge
-            padding = 10  # pixels inside box
-            min_line_height = 20  # minimum pixels per line
-            
-            # Split description into lines if too long
+            margin = 8
+            padding = 10
+            min_line_height = 20
             font = cv2.FONT_HERSHEY_SIMPLEX
-            max_width = int(width * 0.9)  # Use up to 90% of frame width
+            max_width = int(width * 0.9)
             
-            # Add timestamp line and description
             full_text = f"Frame {frame_number} [{timestamp:.2f}s]\n{description}"
             words = full_text.split()
             lines = []
             current_line = []
             
-            # Calculate appropriate font scale
-            font_scale = min(height * 0.03 / min_line_height, 0.7)  # Scale with frame height but cap it
+            font_scale = min(height * 0.03 / min_line_height, 0.7)
             
             for word in words:
                 test_line = ' '.join(current_line + [word])
@@ -1645,12 +1748,10 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
             if current_line:
                 lines.append(' '.join(current_line))
             
-            # Calculate box dimensions
             line_count = len(lines)
-            line_height = max(min_line_height, int(height * 0.03))  # Scale with frame height
+            line_height = max(min_line_height, int(height * 0.03))
             box_height = line_count * line_height + 2 * padding
             
-            # Create overlay for text background
             overlay = frame.copy()
             cv2.rectangle(overlay, 
                          (int(margin), int(margin)),
@@ -1658,11 +1759,9 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
                          (0, 0, 0),
                          -1)
             
-            # Blend overlay with original frame
             alpha = 0.7
             frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
             
-            # Add text directly on frame to keep it fully opaque
             y = margin + padding + line_height
             for line in lines:
                 cv2.putText(frame,
@@ -1675,7 +1774,6 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
                            cv2.LINE_AA)
                 y += line_height
             
-            # Convert back to PIL for gallery display
             frame_pil = Image.fromarray(frame)
             gallery_images.append(frame_pil)
     
@@ -1691,23 +1789,47 @@ def process_folder(folder_path, args):
     """Process all videos in a folder with retries."""
     # Get list of video files
     video_extensions = ('.mp4', '.avi', '.mov', '.mkv', '.webm')
-    video_files = [f for f in os.listdir(folder_path) 
-                  if os.path.isfile(os.path.join(folder_path, f)) 
-                  and f.lower().endswith(video_extensions)]
+    
+    # Get all video files
+    all_files = [f for f in os.listdir(folder_path) 
+                if os.path.isfile(os.path.join(folder_path, f)) 
+                and f.lower().endswith(video_extensions)]
+    
+    # Filter out output files and temporary files
+    video_files = []
+    for f in all_files:
+        # Skip if it's an output file or temporary file
+        if (f.startswith('captioned_') or 
+            f.startswith('temp_') or 
+            f.startswith('concat_') or 
+            f.endswith('_web.mp4')):
+            print(f"Skipping output/temp file: {f}")
+            continue
+        video_files.append(f)
     
     if not video_files:
         print(f"No video files found in {folder_path}")
         return
 
     print(f"Found {len(video_files)} video files to process")
+    print("Files to process:", video_files)
+    
+    # Keep track of successfully processed videos
+    processed_videos = set()
     
     # Process each video with retries
     for i, video_file in enumerate(video_files, 1):
+        if video_file in processed_videos:
+            print(f"Skipping already processed video: {video_file}")
+            continue
+            
         video_path = os.path.join(folder_path, video_file)
         print(f"\nProcessing video {i}/{len(video_files)}: {video_file}")
         
         # Try processing with up to 10 retries
         max_retries = 10
+        success_marker = f"Captioned video saved to: outputs/captioned_{os.path.splitext(video_file)[0]}_web.mp4"
+        
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
@@ -1722,21 +1844,40 @@ def process_folder(folder_path, args):
                     use_frame_selection=args.frame_selection,
                     use_synthesis_captions=args.synthesis_captions,
                     use_local_llm=args.local,
-                    show_transcriptions=args.transcribe
+                    show_transcriptions=args.transcribe,
+                    debug=args.debug
                 )
                 
-                print(f"Successfully processed {video_file}")
-                print("\nVideo Summary:")
-                print(summary)
-                print(f"\nCaptioned video saved to: {output_video_path}")
-                break  # Success, exit retry loop
+                # Check if the expected output file exists
+                expected_output = os.path.join('outputs', f'captioned_{os.path.splitext(video_file)[0]}_web.mp4')
+                if os.path.exists(expected_output):
+                    processed_videos.add(video_file)
+                    print(f"Successfully processed {video_file}")
+                    print("\nVideo Summary:")
+                    print(summary)
+                    print(success_marker)  # Print the specific success marker
+                    break  # Success, exit retry loop
+                else:
+                    print(f"Output file not found: {expected_output}")
+                    if attempt == max_retries - 1:
+                        print(f"Failed to process {video_file} after {max_retries} attempts")
+                    else:
+                        print("Retrying...")
                 
             except Exception as e:
                 print(f"Error processing {video_file} (attempt {attempt + 1}/{max_retries}): {str(e)}")
-                if attempt == max_retries - 1:  # Last attempt
+                # Check if the success marker is in the error message
+                if str(e).find(success_marker) != -1:
+                    print("Found success marker in error message - video was actually processed successfully")
+                    processed_videos.add(video_file)
+                    break
+                elif attempt == max_retries - 1:  # Last attempt
                     print(f"Failed to process {video_file} after {max_retries} attempts")
                 else:
                     print("Retrying immediately...")
+    
+    print(f"\nProcessing complete. Successfully processed {len(processed_videos)} out of {len(video_files)} videos.")
+    print("Processed videos:", sorted(list(processed_videos)))
 
 def recontextualize_summary(summary: str, metadata_context: str, use_local_llm: bool = False) -> str:
     """Recontextualize just the summary using metadata context."""
@@ -1751,13 +1892,16 @@ Given the video's metadata and initial summary, provide a more complete understa
 
 Guidelines for Recontextualization:
 1. Consider the metadata FIRST - it provides crucial context about the video's origin and purpose
-2. Use the video's title, creator, and other metadata to properly frame the context
+2. Use the video's title, creator, and other metadata to properly frame the context, but IGNORE:
+   - Software/tool attributions (e.g. "Created with Clipchamp", "Made in Adobe", etc.)
+   - Watermarks or branding from editing tools
+   - Generic platform metadata (e.g. "Uploaded to YouTube")
 3. Pay special attention to:
-   - The video's intended purpose (based on metadata)
+   - The video's intended purpose (based on meaningful metadata)
    - Professional vs. amateur content
    - Genre and style implications
 4. Maintain objectivity while acknowledging the full context
-5. Don't speculate beyond what's supported by metadata
+5. Don't speculate beyond what's supported by meaningful metadata
 6. Keep roughly the same length and style
 7. Your output must include <recontextualized_summary> open tags and </recontextualized_summary> close tags, with the summary content between them.
 
@@ -1826,6 +1970,7 @@ def main():
     parser.add_argument('--web', action='store_true', help='Start Gradio web interface')
     parser.add_argument('--synthesis-captions', action='store_true', help='Use synthesized narrative captions (recommended)')
     parser.add_argument('--transcribe', action='store_true', help='Show speech transcriptions in the output video')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode to show metadata in summary screen')
     args = parser.parse_args()
 
     if args.web:
@@ -1837,7 +1982,8 @@ def main():
                 gr.Checkbox(label="Use Frame Selection", value=True, info="Recommended: Intelligently selects key frames"),
                 gr.Checkbox(label="Use Synthesis Captions", value=True, info="Recommended: Creates a more pleasant viewing experience"),
                 gr.Checkbox(label="Use Local LLM", value=True, info="Use local Llama model instead of OpenAI API (requires model weights)"),
-                gr.Checkbox(label="Show Transcriptions", value=False, info="Show speech transcriptions in the output video")
+                gr.Checkbox(label="Show Transcriptions", value=False, info="Show speech transcriptions in the output video"),
+                gr.Checkbox(label="Debug Mode", value=False, info="Show metadata in summary screen")
             ],
             outputs=[
                 gr.Video(label="Captioned Video"),
@@ -1871,7 +2017,8 @@ def main():
                 use_frame_selection=args.frame_selection,
                 use_synthesis_captions=args.synthesis_captions,
                 use_local_llm=args.local,
-                show_transcriptions=args.transcribe
+                show_transcriptions=args.transcribe,
+                debug=args.debug
             )
             
             # Print the summary and processing time
