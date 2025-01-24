@@ -395,32 +395,152 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     filename = f"logs/{timestamp}_{video_name}.json"
 
-    # Read the current prompt from moondream_prompt.md
-    with open('prompts/moondream_prompt.md', 'r') as prompt_file:
-        current_prompt = prompt_file.read().strip()
+    # Get detailed video metadata using ffprobe
+    try:
+        cmd = [
+            'ffprobe',
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
+            '-show_streams',
+            video_path
+        ]
+        metadata_json = subprocess.check_output(cmd).decode('utf-8')
+        video_metadata = json.loads(metadata_json)
+    except Exception as e:
+        print(f"Warning: Could not get detailed video metadata: {str(e)}")
+        video_metadata = {}
+
+    # Calculate video duration and other properties
+    video = cv2.VideoCapture(video_path)
+    fps = video.get(cv2.CAP_PROP_FPS)
+    width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    video_duration = frame_count / fps if fps else None
+    video.release()
+
+    # Determine video type and caption calculations
+    video_type = "Short (<30s)" if video_duration < 30 else "Medium (30-90s)" if video_duration < 90 else "Medium-long (90-150s)" if video_duration < 150 else "Long (>150s)"
+    
+    # Calculate target captions
+    if video_duration > 150:
+        num_captions = max(15, frame_count // 2)
+        caption_calc = f"max(15, {frame_count} // 2)"
+    elif video_duration > 90:
+        base_captions = int(video_duration / 6)
+        num_captions = min(int(base_captions * 1.25), frame_count // 2)
+        num_captions = max(9, num_captions)
+        caption_calc = f"min(max(9, {base_captions} * 1.25), {frame_count} // 2)"
+    else:
+        if video_duration < 30:
+            target_captions = int(video_duration / 3.5)
+            num_captions = min(100, max(4, target_captions))
+            caption_calc = f"min(100, max(4, {video_duration} / 3.5))"
+        else:
+            caption_interval = 5.0 + (video_duration - 30) * (7.0 - 5.0) / (90 - 30)
+            target_captions = int(video_duration / caption_interval)
+            max_captions = min(int(video_duration / 4), frame_count // 3)
+            num_captions = min(target_captions, max_captions)
+            num_captions = max(8, num_captions)
+            caption_calc = f"min(max(8, {target_captions}), {max_captions})"
+
+    # Read the current prompts
+    moondream_prompt = ""
+    try:
+        with open('prompts/moondream_prompt.md', 'r') as prompt_file:
+            moondream_prompt = prompt_file.read().strip()
+    except Exception as e:
+        print(f"Warning: Could not read Moondream prompt: {str(e)}")
+
+    # Get GPU memory usage if available
+    gpu_memory = {}
+    if torch.cuda.is_available():
+        try:
+            for i in range(torch.cuda.device_count()):
+                gpu_memory[f"gpu_{i}"] = {
+                    "total": torch.cuda.get_device_properties(i).total_memory,
+                    "allocated": torch.cuda.memory_allocated(i),
+                    "cached": torch.cuda.memory_reserved(i)
+                }
+        except Exception as e:
+            print(f"Warning: Could not get GPU memory info: {str(e)}")
+
+    # Check for embedding cache
+    cache_path = os.path.join('embedding_cache', f'{video_name}.npy')
+    embedding_cache_exists = os.path.exists(cache_path)
 
     output = {
-        "video_path": video_path,
-        "frame_count": frame_count,
-        "transcript": transcript,
-        "moondream_prompt": current_prompt,
-        "frame_descriptions": [
-            {
-                "frame_number": frame,
-                "timestamp": timestamp,
-                "description": desc
-            } for frame, timestamp, desc in descriptions
-        ],
-        "summary": summary,
-        "total_run_time": total_run_time,
-        "synthesis": {
-            "raw_output": synthesis_output,
-            "captions": [
+        "processing_info": {
+            "timestamp": timestamp,
+            "total_run_time": total_run_time,
+            "gpu_memory": gpu_memory,
+            "embedding_cache_status": {
+                "exists": embedding_cache_exists,
+                "path": cache_path if embedding_cache_exists else None
+            }
+        },
+        "video_metadata": {
+            "path": video_path,
+            "frame_count": frame_count,
+            "duration": video_duration,
+            "fps": fps,
+            "resolution": {
+                "width": width,
+                "height": height
+            },
+            "ffprobe_data": video_metadata,
+            "video_type": video_type
+        },
+        "caption_analysis": {
+            "video_type": video_type,
+            "target_captions": num_captions,
+            "captions_per_second": num_captions/video_duration if video_duration else None,
+            "calculation_formula": caption_calc,
+            "actual_captions_generated": len(synthesis_captions) if synthesis_captions else 0
+        },
+        "model_info": {
+            "moondream_prompt": moondream_prompt,
+            "whisper_model": "large-v3-turbo",
+            "clip_model": "ViT-SO400M-14-SigLIP-384",
+            "synthesis_model": "Meta-Llama-3.1-8B-Instruct" if os.environ.get("USE_LOCAL_LLM") else "gpt-4o"
+        },
+        "processing_stages": {
+            "frame_selection": {
+                "method": "clip" if os.environ.get("USE_FRAME_SELECTION") else "regular_sampling",
+                "parameters": {
+                    "novelty_threshold": 0.08,
+                    "min_skip": 10,
+                    "n_clusters": 15
+                } if os.environ.get("USE_FRAME_SELECTION") else {
+                    "sampling_interval": 50
+                }
+            },
+            "transcription": {
+                "segments": transcript,
+                "total_segments": len(transcript)
+            },
+            "frame_descriptions": [
                 {
+                    "frame_number": frame,
                     "timestamp": timestamp,
-                    "text": text
-                } for timestamp, text in (synthesis_captions or [])
-            ]
+                    "description": desc
+                } for frame, timestamp, desc in descriptions
+            ],
+            "synthesis": {
+                "raw_output": synthesis_output,
+                "captions": [
+                    {
+                        "timestamp": timestamp,
+                        "text": text
+                    } for timestamp, text in (synthesis_captions or [])
+                ],
+                "summary": summary
+            }
+        },
+        "error_log": {
+            "warnings": [],  # Populated by warning handler
+            "errors": [],    # Populated by error handler
+            "retries": {}    # Populated by retry tracking
         }
     }
 

@@ -488,7 +488,7 @@ python main.py <video_path>
 
 Advanced options:
 ```bash
-python main.py <video_path> [--save] [--local] [--frame-selection] [--web] [--synthesis-captions] [--transcribe]
+python main.py <video_path> [--save] [--local] [--frame-selection] [--web] [--synthesis-captions] [--transcribe] [--debug]
 ```
 
 Options explained:
@@ -498,14 +498,18 @@ Options explained:
 - `--web`: Launch web interface (highly recommended)
 - `--synthesis-captions`: Use synthesized narrative captions (recommended for better viewing experience)
 - `--transcribe`: Show speech transcriptions in the output video (optional, transcripts are still generated for captions)
+- `--debug`: Enable debug mode with additional metadata overlay and detailed logging
 
 Example commands:
 ```bash
 # Launch web interface (recommended for single video processing, easy to use)
 python main.py --web
 
-# Process single video with all features including transcriptions
-python main.py video.mp4 --frame-selection --local --save --synthesis-captions --transcribe
+# Process single video with all features including debug mode
+python main.py video.mp4 --frame-selection --local --save --synthesis-captions --transcribe --debug
+
+# Process video with debug mode for troubleshooting
+python main.py video.mp4 --debug
 
 # Process video with captions but without visible transcriptions
 python main.py video.mp4 --frame-selection --synthesis-captions
@@ -571,7 +575,7 @@ Be concise but comprehensive. Focus on the most important information.
 
 ## Output Format
 
-When using `--save`, outputs are saved in `logs/` with the following structure:
+When using `--save` or `--debug`, outputs are saved in `logs/` with the following structure:
 ```json
 {
     "video_path": "path/to/video",
@@ -676,6 +680,13 @@ Plot interpretation:
 
 ## Recent Updates
 
+### Debug Mode Addition
+- New `--debug` flag for enhanced troubleshooting
+- Comprehensive metadata overlay
+- Real-time processing information
+- Visual debug indicators
+- Improved error tracking
+
 ### Audio Processing Improvements
 - Enhanced timing and synchronization:
   - Predictive caption timing with 0.5s early display
@@ -737,3 +748,19 @@ Plot interpretation:
 ### Video Processing Limitations
 - Maximum recommended video length: 6-8 minutes
 - Automatic audio stream detection
+
+### Debug Mode Features
+- Detailed metadata overlay in video output:
+  - Video Info: Duration, Resolution, FPS, Size
+  - Caption Info: Video Type, Target Captions, Captions/Second, Calculation
+- Enhanced logging of processing steps
+- Visual indicators in debug mode:
+  - "DEBUG" prefix in attribution text
+  - Metadata overlay in top-left corner
+- Automatic metadata extraction and display
+- Real-time calculation visualization
+- Helps with:
+  - Troubleshooting caption timing
+  - Verifying video properties
+  - Understanding caption calculations
+  - Monitoring processing flow
