@@ -15,4 +15,5 @@ python-dotenv
 gradio
 pyvips
 pydub
+openai-whisper
 # flash-attn
