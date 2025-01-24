@@ -1124,15 +1124,26 @@ def create_summary_clip(summary: str, width: int, height: int, fps: int, debug: 
         debug_font_scale = min(height * 0.018 / 20, 0.5)  # Increased from 0.015 to 0.018
         y_pos = 30  # Start position from top
         x_pos = 20  # Left margin
+        line_spacing = 25  # Space between lines
+        section_spacing = 35  # Space between sections
         
-        # Format and display metadata
-        for key, value in metadata.items():
-            if isinstance(value, float):
-                debug_text = f"{key}: {value:.2f}"
-            else:
-                debug_text = f"{key}: {value}"
-            cv2.putText(frame, debug_text, (x_pos, y_pos), font, debug_font_scale, (200, 200, 200), 1, cv2.LINE_AA)
-            y_pos += 25  # Space between lines
+        # Format and display metadata by sections
+        for section_name, section_data in metadata.items():
+            # Draw section header
+            cv2.putText(frame, f"{section_name}:", (x_pos, y_pos), font, debug_font_scale * 1.1, (255, 255, 255), 1, cv2.LINE_AA)
+            y_pos += line_spacing
+            
+            # Draw section items
+            for key, value in section_data.items():
+                if isinstance(value, float):
+                    debug_text = f"  {key}: {value:.2f}"
+                else:
+                    debug_text = f"  {key}: {value}"
+                cv2.putText(frame, debug_text, (x_pos, y_pos), font, debug_font_scale, (200, 200, 200), 1, cv2.LINE_AA)
+                y_pos += line_spacing
+            
+            # Add extra space between sections
+            y_pos += section_spacing - line_spacing  # Subtract line_spacing to not add too much space
     
     # Prepare text
     font_scale = min(height * 0.04 / 20, 1.0)  # Slightly larger font for summary
@@ -1624,23 +1635,47 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
             metadata_json = subprocess.check_output(cmd).decode('utf-8')
             metadata = json.loads(metadata_json)
             
+            # Determine video type based on duration
+            video_type = "Short (<30s)" if video_duration < 30 else "Medium (30-90s)" if video_duration < 90 else "Medium-long (90-150s)" if video_duration < 150 else "Long (>150s)"
+            
+            # Calculate target captions
+            if video_duration > 150:
+                num_captions = max(15, frame_count // 2)
+                caption_calc = f"max(15, {frame_count} // 2)"
+            elif video_duration > 90:
+                base_captions = int(video_duration / 6)
+                num_captions = min(int(base_captions * 1.25), frame_count // 2)
+                num_captions = max(9, num_captions)
+                caption_calc = f"min(max(9, {base_captions} * 1.25), {frame_count} // 2)"
+            else:
+                if video_duration < 30:
+                    target_captions = int(video_duration / 3.5)
+                    num_captions = min(100, max(4, target_captions))
+                    caption_calc = f"min(100, max(4, {video_duration} / 3.5))"
+                else:
+                    caption_interval = 5.0 + (video_duration - 30) * (7.0 - 5.0) / (90 - 30)
+                    target_captions = int(video_duration / caption_interval)
+                    max_captions = min(int(video_duration / 4), frame_count // 3)
+                    num_captions = min(target_captions, max_captions)
+                    num_captions = max(8, num_captions)
+                    caption_calc = f"min(max(8, {target_captions}), {max_captions})"
+            
             # Extract relevant metadata
             debug_metadata = {
-                'Duration': float(metadata.get('format', {}).get('duration', 0)),
-                'Size': f"{int(int(metadata.get('format', {}).get('size', 0)) / 1024 / 1024)}MB",
-                'Format': metadata.get('format', {}).get('format_name', ''),
-                'Bitrate': f"{int(int(metadata.get('format', {}).get('bit_rate', 0)) / 1024)}Kbps",
-                'Start Time': metadata.get('format', {}).get('start_time', '0'),
+                'Video Info': {
+                    'Duration': f"{video_duration:.1f}s",
+                    'Resolution': f"{metadata.get('streams', [{}])[0].get('width', '')}x{metadata.get('streams', [{}])[0].get('height', '')}",
+                    'FPS': f"{eval(metadata.get('streams', [{}])[0].get('r_frame_rate', '0/1')):.1f}",
+                    'Size': f"{int(int(metadata.get('format', {}).get('size', 0)) / 1024 / 1024)}MB"
+                },
+                'Caption Info': {
+                    'Video Type': video_type,
+                    'Target Captions': str(num_captions),
+                    'Captions/Second': f"{num_captions/video_duration:.2f}",
+                    'Calculation': caption_calc.replace(' ', '')  # Remove spaces to make it more compact
+                }
             }
             
-            # Add video stream info if available
-            video_stream = next((s for s in metadata.get('streams', []) if s.get('codec_type') == 'video'), None)
-            if video_stream:
-                debug_metadata.update({
-                    'Resolution': f"{video_stream.get('width', '')}x{video_stream.get('height', '')}",
-                    'Codec': video_stream.get('codec_name', ''),
-                    'FPS': eval(video_stream.get('r_frame_rate', '0/1')),  # Safely evaluate frame rate fraction
-                })
         except Exception as e:
             print(f"Error extracting debug metadata: {str(e)}")
             debug_metadata = {'Error': 'Failed to extract metadata'}
