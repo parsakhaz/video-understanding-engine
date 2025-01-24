@@ -45,9 +45,9 @@
 
 A powerful video summarization tool that combines multiple AI models to provide comprehensive video understanding through audio transcription, intelligent frame selection, visual description, and content summarization.
 
-## Quick Start
+## Quick Start (Mac/Linux)
 
-Reference [Installation](#installation) for more a detailed guide on how to install the dependencies (ffmpeg, pyvips, etc) and get things running.
+Reference [Installation](#installation) for more a detailed guide on how to install the dependencies on different devices (ffmpeg, pyvips, etc) and get things running.
 
 ```bash
 # Create a virtual environment
@@ -60,6 +60,9 @@ pip install -r requirements.txt
 
 # Login to Hugging Face (required for model access)
 huggingface-cli login
+
+# Install Pyvips and ffmpeg to device (linux)
+apt-get install libvips libvips-dev ffmpeg
 
 # Run with web interface (recommended)
 python main.py --web
@@ -451,8 +454,23 @@ sudo apt-get install ffmpeg libvips libvips-dev
 brew install ffmpeg vips
 
 # Windows
-# 1. Download and install FFmpeg from https://ffmpeg.org/download.html
-# 2. Download and install libvips from https://github.com/libvips/build-win64/releases
+# 1. Download and install FFmpeg:
+#    - Go to https://ffmpeg.org/download.html
+#    - Download the Windows build
+#    - Extract the ZIP file
+#    - Add the bin folder to your system PATH
+#
+# 2. Install libvips:
+#    - Go to https://github.com/libvips/build-win64/releases
+#    - Download vips-dev-w64-all-8.16.0.zip for 64-bit or vips-dev-w32-all-8.16.0.zip for 32-bit
+#    - Extract the ZIP file
+#    - Copy all DLL files from vips-dev-8.16\bin to either:
+#      - Your project's root directory OR
+#      - C:\Windows\System32 (requires admin privileges)
+#    - Add to PATH:
+#      - Open System Properties -> Advanced -> Environment Variables
+#      - Under System Variables, find PATH
+#      - Add the full path to the vips-dev-8.16\bin directory
 ```
 
 ### Python Dependencies
