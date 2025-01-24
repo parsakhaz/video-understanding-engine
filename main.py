@@ -1759,11 +1759,12 @@ Guidelines for Recontextualization:
 4. Maintain objectivity while acknowledging the full context
 5. Don't speculate beyond what's supported by metadata
 6. Keep roughly the same length and style
+7. Your output must include <recontextualized_summary> open tags and </recontextualized_summary> close tags, with the summary content between them.
 
 Output Format:
-<summary>
+<recontextualized_summary>
 A new summary that integrates metadata context. Must start with "This video presents"
-</summary>
+</recontextualized_summary>
 
 Input:
 <metadata>
@@ -1788,7 +1789,7 @@ Input:
     max_retries = 3
     for attempt in range(max_retries):
         print(f"\nAttempt {attempt + 1}/{max_retries} to get recontextualized summary...")
-        completion = get_llm_completion(prompt_content, "", use_local_llm=use_local_llm)  # Use passed use_local_llm parameter
+        completion = get_llm_completion(prompt_content, "", use_local_llm=use_local_llm)
         
         if completion:
             print("\nGot completion response:")
@@ -1796,31 +1797,15 @@ Input:
             print(completion)
             print("-" * 80)
             
-            # Try multiple patterns to extract summary
-            patterns = [
-                r'<summary>\s*(.*?)\s*</summary>',  # Standard XML
-                r'<summary>\n*(.*?)\n*</summary>',  # XML with newlines
-                r'Summary:\s*(.*?)\s*(?:\n|$)',     # Colon format
-                r'"summary":\s*"(.*?)"',            # JSON format
-                r'summary=(.*?)(?:\n|$)'            # Assignment format
-            ]
-            
-            for pattern in patterns:
-                summary_match = re.search(pattern, completion, re.DOTALL | re.IGNORECASE)
-                if summary_match:
-                    new_summary = summary_match.group(1).strip()
-                    # Validate summary starts with "This video presents"
-                    if new_summary.startswith("This video presents"):
-                        print("\nSuccessfully extracted new summary using pattern:", pattern)
-                        print(new_summary)
-                        return new_summary
-                    else:
-                        print(f"\nFound summary with pattern {pattern} but it doesn't start with 'This video presents'")
-                        print("Trying next pattern...")
-            
-            print("\nFailed to extract valid summary with any pattern")
-            print("Raw completion response:")
-            print(completion)
+            # Extract summary from completion using same regex pattern style
+            summary_match = re.search(r'<recontextualized_summary>(.*?)</recontextualized_summary>', completion, re.DOTALL)
+            if summary_match:
+                new_summary = summary_match.group(1).strip()
+                print("\nSuccessfully extracted new summary:")
+                print(new_summary)
+                return new_summary
+            else:
+                print("\nFailed to extract summary from completion - no <recontextualized_summary> tags found")
         else:
             print("\nNo completion returned from LLM")
         
