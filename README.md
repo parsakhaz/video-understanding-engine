@@ -50,18 +50,22 @@ A powerful video summarization tool that combines multiple AI models to provide 
 Reference [Installation](#installation) for more a detailed guide on how to install the dependencies (ffmpeg, pyvips, etc) and get things running.
 
 ```bash
+# Create a virtual environment
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+.\venv\Scripts\activate   # Windows
+
+# Install dependencies and run with default settings
+pip install -r requirements.txt
+
 # Login to Hugging Face (required for model access)
 huggingface-cli login
-
-# Install and run with default settings
-pip install -r requirements.txt
-python main.py video.mp4
 
 # Run with web interface (recommended)
 python main.py --web
 
 # Run with all features enabled (including local LLM)
-python main.py video.mp4 --frame-selection --local --save --synthesis-captions
+python main.py video.mp4 --frame-selection --local --save --synthesis-captions --transcribe --debug
 ```
 
 ## Features
