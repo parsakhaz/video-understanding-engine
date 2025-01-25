@@ -25,6 +25,7 @@ from transformers import pipeline
 import whisper
 import traceback
 from prompts import get_frame_description_prompt, get_recontextualization_prompt, get_final_summary_prompt
+import video_utils  # Add this import
 
 # =============================================================================
 # CONFIGURATION CONSTANTS
@@ -186,38 +187,11 @@ def clean_transcript(segments):
 
 def get_video_duration(video_path):
     """Get video duration using ffprobe."""
-    try:
-        cmd = [
-            'ffprobe', 
-            '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            video_path
-        ]
-        duration = float(subprocess.check_output(cmd).decode().strip())
-        print(f"Video duration: {duration:.2f} seconds")
-        return duration
-    except Exception as e:
-        print(f"Warning: Could not get video duration: {str(e)}")
-        return None
+    return video_utils.get_video_duration(video_path)
 
 def extract_audio(video_path):
     """Extract audio from video to MP3."""
-    audio_path = os.path.join('outputs', f'temp_audio_{int(time.time())}.mp3')
-    os.makedirs('outputs', exist_ok=True)
-    
-    try:
-        cmd = [
-            'ffmpeg', '-y',
-            '-i', video_path,
-            '-vn',  # No video
-            audio_path
-        ]
-        subprocess.run(cmd, check=True)
-        return audio_path
-    except Exception as e:
-        print(f"Error extracting audio: {str(e)}")
-        return None
+    return video_utils.extract_audio(video_path)
 
 def process_transcript(segments):
     """Convert Whisper segments to our transcript format."""
@@ -349,10 +323,12 @@ def describe_frames(video_path, frame_numbers):
     prompt = get_frame_description_prompt()
 
     print("Extracting frames...")
-    video = cv2.VideoCapture(video_path)
-    fps = video.get(cv2.CAP_PROP_FPS)
+    # Get video properties using video_utils
+    props = video_utils.get_video_properties(video_path)
+    fps = props['fps']
     frames = []
 
+    video = cv2.VideoCapture(video_path)
     for frame_number in frame_numbers:
         video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
         success, frame = video.read()
@@ -491,32 +467,15 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     filename = f"logs/{timestamp}_{video_name}.json"
 
-    # Get detailed video metadata using ffprobe
-    try:
-        cmd = [
-            'ffprobe',
-            '-v', 'quiet',
-            '-print_format', 'json',
-            '-show_format',
-            '-show_streams',
-            video_path
-        ]
-        metadata_json = subprocess.check_output(cmd).decode('utf-8')
-        metadata = json.loads(metadata_json)
-        # Extract metadata context from tags
-        metadata_context = json.dumps(metadata.get('format', {}).get('tags', {}), indent=2)
-    except Exception as e:
-        print(f"Warning: Could not get detailed video metadata: {str(e)}")
-        metadata = {}
-        metadata_context = ""
+    # Get detailed video metadata using video_utils
+    metadata, metadata_context = video_utils.get_video_metadata(video_path)
 
-    # Calculate video duration and other properties
-    video = cv2.VideoCapture(video_path)
-    fps = video.get(cv2.CAP_PROP_FPS)
-    width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    # Get video properties using video_utils
+    props = video_utils.get_video_properties(video_path)
+    fps = props['fps']
+    width = props['frame_width']
+    height = props['frame_height']
     video_duration = frame_count / fps if fps else None
-    video.release()
 
     # Determine video type based on duration thresholds from config
     if video_duration < VIDEO_SETTINGS['MIN_VIDEO_DURATION']:
@@ -1467,20 +1426,8 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
     """Create a video with persistent captions from keyframe descriptions and transcriptions."""
     print("\nCreating captioned video...")
     
-    # Check if video has an audio stream
-    has_audio = False
-    try:
-        cmd = [
-            'ffprobe', 
-            '-i', video_path,
-            '-show_streams', 
-            '-select_streams', 'a', 
-            '-loglevel', 'error'
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        has_audio = len(result.stdout.strip()) > 0
-    except subprocess.CalledProcessError:
-        print("Error checking audio stream")
+    # Check if video has an audio stream using video_utils
+    has_audio = video_utils.has_audio_stream(video_path)
 
     # Validate synthesis captions if requested
     if use_synthesis_captions:
@@ -1502,11 +1449,18 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
         temp_output = output_path + '.temp'
         final_output = output_path
 
+    # Get video properties using video_utils
+    props = video_utils.get_video_properties(video_path)
+    fps = props['fps']
+    frame_width = props['frame_width']
+    frame_height = props['frame_height']
+    total_frames = props['total_frames']
+
+    # Initialize video capture
     video = cv2.VideoCapture(video_path)
-    fps = video.get(cv2.CAP_PROP_FPS)
-    frame_width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+    if not video.isOpened():
+        print(f"Error: Could not open video {video_path}")
+        return None
 
     # Choose which captions to use
     if use_synthesis_captions and synthesis_captions:
@@ -1733,67 +1687,22 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
         metadata=debug_metadata
     )
     
-    # Create a file list for concatenation
-    concat_file = os.path.join(VIDEO_SETTINGS['OUTPUT_DIR'], 'concat_list.txt')
-    with open(concat_file, 'w') as f:
-        f.write(f"file '{os.path.abspath(summary_path)}'\n")
-        f.write(f"file '{os.path.abspath(temp_output)}'\n")
-    
-    # Concatenate videos
+    # Concatenate videos and add audio if present
     print("\nCombining summary and main video...")
-    concat_output = os.path.join(VIDEO_SETTINGS['OUTPUT_DIR'], f'concat_{os.path.basename(temp_output)}')
-    concat_cmd = [
-        'ffmpeg', '-y',
-        '-f', 'concat',
-        '-safe', '0',
-        '-i', concat_file,
-        '-c', 'copy',
-        concat_output
-    ]
-    subprocess.run(concat_cmd, check=True)
-    
-    # Modify ffmpeg command based on audio presence
-    if has_audio:
-        cmd = [
-            'ffmpeg', '-y',
-            '-i', concat_output,      # Input concatenated video
-            '-i', video_path,         # Input original video (for audio)
-            '-filter_complex', f'[1:a]adelay={int(summary_duration*1000)}|{int(summary_duration*1000)}[delayed_audio]',  # Delay audio
-            '-c:v', 'copy',           # Copy video stream as is
-            '-map', '0:v',            # Use video from first input
-            '-map', '[delayed_audio]', # Use delayed audio
-            final_output
-        ]
-    else:
-        # If no audio, just copy the video stream
-        cmd = [
-            'ffmpeg', '-y',
-            '-i', concat_output,
-            '-c:v', 'copy',
-            final_output
-        ]
-    
-    subprocess.run(cmd, check=True)
+    final_output = video_utils.concatenate_videos(
+        video_paths=[summary_path, temp_output],
+        output_path=final_output,
+        has_audio=has_audio,
+        audio_source=video_path if has_audio else None,
+        audio_delay=summary_duration
+    )
     
     # Clean up temporary files
     os.remove(temp_output)
     os.remove(summary_path)
-    os.remove(concat_file)
-    os.remove(concat_output)
     
-    # Convert to web-compatible format (h264)
-    web_output = final_output.replace('.mp4', '_web.mp4')
-    convert_cmd = [
-        'ffmpeg', '-y',
-        '-i', final_output,
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',  # Use ultrafast preset for speed
-        '-crf', '23',           # Reasonable quality
-        '-c:a', 'aac',          # AAC audio for web compatibility
-        '-movflags', '+faststart',  # Enable fast start for web playback
-        web_output
-    ]
-    subprocess.run(convert_cmd, check=True)
+    # Convert to web-compatible format
+    web_output = video_utils.convert_to_web_format(final_output)
     
     # Remove the non-web version
     os.remove(final_output)
