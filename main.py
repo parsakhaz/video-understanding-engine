@@ -931,8 +931,7 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
     # Validate synthesis captions if requested
     if use_synthesis_captions:
         if not synthesis_captions:
-            use_synt
-            hesis_captions = False
+            use_synthesis_captions = False
     
     # Create output directory if needed
     if output_path is None:
@@ -1397,7 +1396,6 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
         f"Video Summary:\n{summary}\n\nTime taken: {total_run_time:.2f} seconds", 
         gallery_images
     )
-
 def process_folder(folder_path, args):
     """Process all videos in a folder with retries."""
     # Get list of video files
@@ -1420,29 +1418,35 @@ def process_folder(folder_path, args):
         video_files.append(f)
     
     if not video_files:
+        print("No video files found to process.")
         return
 
     # Keep track of successfully processed videos
     processed_videos = set()
+    failed_videos = set()
+    
+    print(f"\nFound {len(video_files)} videos to process in {folder_path}")
     
     # Process each video with retries
     for i, video_file in enumerate(video_files, 1):
-        if video_file in processed_videos:
+        if video_file in processed_videos or video_file in failed_videos:
             continue
             
         video_path = os.path.join(folder_path, video_file)
+        print(f"\nProcessing video {i}/{len(video_files)}: {video_file}")
         
         # Try processing with up to 10 retries
         max_retries = 10
-        success_marker = f"Captioned video saved to: outputs/captioned_{os.path.splitext(video_file)[0]}_web.mp4"
+        success = False
         
         for attempt in range(max_retries):
+            if attempt > 0:
+                print(f"Retry attempt {attempt + 1}/{max_retries} for {video_file}")
+                # Force garbage collection and clear CUDA cache before retry
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            
             try:
-                if attempt > 0:
-                    # Force garbage collection and clear CUDA cache before retry
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                
                 # Process video using the web function for consistency
                 output_video_path, summary, gallery_images = process_video_web(
                     type('VideoFile', (), {'name': video_path})(),
@@ -1457,18 +1461,30 @@ def process_folder(folder_path, args):
                 expected_output = os.path.join('outputs', f'captioned_{os.path.splitext(video_file)[0]}_web.mp4')
                 if os.path.exists(expected_output):
                     processed_videos.add(video_file)
-                    break  # Success, exit retry loop
-                else:
-                    if attempt == max_retries - 1:
-                        pass
+                    print(f"Successfully processed {video_file}")
+                    success = True
+                    break
                 
             except Exception as e:
-                # Check if the success marker is in the error message
-                if str(e).find(success_marker) != -1:
-                    processed_videos.add(video_file)
-                    break
-                elif attempt == max_retries - 1:  # Last attempt
-                    pass
+                if attempt == max_retries - 1:
+                    print(f"Failed to process {video_file} after {max_retries} attempts: {str(e)}")
+                    failed_videos.add(video_file)
+                else:
+                    print(f"Error processing {video_file} (attempt {attempt + 1}): {str(e)}")
+                    if not args.local:
+                        time.sleep(2 * (attempt + 1))  # Exponential backoff only for API calls
+        
+        if not success and video_file not in failed_videos:
+            failed_videos.add(video_file)
+            print(f"Failed to process {video_file} after all attempts")
+    
+    # Print final summary
+    print("\nProcessing complete!")
+    print(f"Successfully processed: {len(processed_videos)}/{len(video_files)} videos")
+    if failed_videos:
+        print(f"Failed to process {len(failed_videos)} videos:")
+        for video in failed_videos:
+            print(f"- {video}")
 
 def recontextualize_summary(summary: str, metadata_context: str, use_local_llm: bool = False) -> str:
     """Recontextualize just the summary using metadata context."""
