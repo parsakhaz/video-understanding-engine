@@ -26,14 +26,96 @@ import whisper
 import traceback
 from prompts import get_frame_description_prompt, get_recontextualization_prompt, get_final_summary_prompt
 
-def similar(a, b, threshold=0.90):
-    """Return True if strings are similar above threshold."""
-    return SequenceMatcher(None, a, b).ratio() > threshold
+# =============================================================================
+# CONFIGURATION CONSTANTS
+# =============================================================================
 
-def clean_transcript(segments):
-    """Clean up transcript by removing duplicates and background noise."""
-    # Common background noise phrases to filter
-    noise_phrases = [
+# Video Processing Settings
+VIDEO_SETTINGS = {
+    'FRAME_SAMPLING_INTERVAL': 50,  # Interval for regular frame sampling
+    'MIN_VIDEO_DURATION': 30,       # Seconds, threshold for short videos
+    'MEDIUM_VIDEO_DURATION': 90,    # Seconds, threshold for medium videos
+    'LONG_VIDEO_DURATION': 150,     # Seconds, threshold for long videos
+    'OUTPUT_DIR': 'outputs',        # Directory for output files
+    'SUPPORTED_EXTENSIONS': ('.mp4', '.avi', '.mov', '.mkv', '.webm')
+}
+
+# Frame Selection Settings
+FRAME_SELECTION = {
+    'NOVELTY_THRESHOLD': 0.08,      # Threshold for frame uniqueness
+    'MIN_SKIP_FRAMES': 10,          # Minimum frames to skip
+    'NUM_CLUSTERS': 15,             # Number of frame clusters
+    'BATCH_SIZE': 8                 # Batch size for frame processing
+}
+
+# Model Settings
+MODEL_SETTINGS = {
+    'VISION_MODEL': "vikhyatk/moondream2",
+    'VISION_MODEL_REVISION': "2025-01-09",
+    'WHISPER_MODEL': "large",
+    'LOCAL_LLM_MODEL': "meta-llama/Meta-Llama-3.1-8B-Instruct",
+    'GPT_MODEL': "gpt-4o",
+    'TEMPERATURE': 0.3
+}
+
+# UI/Display Settings
+DISPLAY = {
+    'FONT': cv2.FONT_HERSHEY_SIMPLEX,
+    'FONT_SCALE': {
+        'CAPTION': 0.7,
+        'ATTRIBUTION': 0.6,
+        'DEBUG': 0.5
+    },
+    'MARGIN': {
+        'DEFAULT': 10,
+        'TEXT': 40,
+        'CAPTION': 8
+    },
+    'PADDING': 10,
+    'LINE_SPACING': 10,
+    'SECTION_SPACING': 35,
+    'TEXT_COLOR': {
+        'WHITE': (255, 255, 255),
+        'GRAY': (200, 200, 200),
+        'RED': (0, 0, 255)
+    },
+    'OVERLAY_ALPHA': 0.7,
+    'MAX_WIDTH_RATIO': 0.9,         # Percentage of frame width for text
+    'MIN_LINE_HEIGHT': 20
+}
+
+# Retry Settings
+RETRY = {
+    'MAX_RETRIES': 5,
+    'MAX_RECONTEXTUALIZE_RETRIES': 3,
+    'MAX_METADATA_RETRIES': 3,
+    'INITIAL_DELAY': 1,             # Initial retry delay in seconds
+    'MAX_VIDEO_RETRIES': 10         # Maximum retries for video processing
+}
+
+# Caption Generation Settings
+CAPTION = {
+    'SHORT_VIDEO': {
+        'INTERVAL': 3.5,            # Seconds between captions for short videos
+        'MIN_CAPTIONS': 4,
+        'MAX_CAPTIONS': 100
+    },
+    'MEDIUM_VIDEO': {
+        'MIN_CAPTIONS': 8,
+        'BASE_INTERVAL': 5.0,       # Base interval for medium videos
+        'MAX_INTERVAL': 7.0         # Maximum interval for medium videos
+    },
+    'LONG_VIDEO': {
+        'MIN_CAPTIONS': 15,
+        'INTERVAL_RATIO': 6.0       # One caption every 6 seconds
+    },
+    'TIMESTAMP_OFFSET': 0.1         # Seconds to offset timestamps earlier
+}
+
+# String Similarity Settings
+SIMILARITY = {
+    'THRESHOLD': 0.90,              # Threshold for string similarity comparison
+    'NOISE_PHRASES': [
         "ambient music",
         "music playing",
         "background music",
@@ -42,10 +124,8 @@ def clean_transcript(segments):
         "[Music]",
         "♪",
         "♫"
-    ]
-    
-    # Common boilerplate/disclaimer phrases to detect
-    boilerplate_phrases = [
+    ],
+    'BOILERPLATE_PHRASES': [
         "work of fiction",
         "any resemblance",
         "coincidental",
@@ -54,6 +134,19 @@ def clean_transcript(segments):
         "copyright",
         "trademark"
     ]
+}
+
+def similar(a, b, threshold=SIMILARITY['THRESHOLD']):
+    """Return True if strings are similar above threshold."""
+    return SequenceMatcher(None, a, b).ratio() > threshold
+
+def clean_transcript(segments):
+    """Clean up transcript by removing duplicates and background noise."""
+    # Common background noise phrases to filter
+    noise_phrases = SIMILARITY['NOISE_PHRASES']
+    
+    # Common boilerplate/disclaimer phrases to detect
+    boilerplate_phrases = SIMILARITY['BOILERPLATE_PHRASES']
     
     # First pass: Remove segments that are just noise or boilerplate
     filtered_segments = []
@@ -241,12 +334,15 @@ def transcribe_video(video_path):
 def describe_frames(video_path, frame_numbers):
     print("Loading Vision-Language model...")
     model = AutoModelForCausalLM.from_pretrained(
-        "vikhyatk/moondream2",
-        revision="2025-01-09",
+        MODEL_SETTINGS['VISION_MODEL'],
+        revision=MODEL_SETTINGS['VISION_MODEL_REVISION'],
         trust_remote_code=True,
         device_map={"": "cuda"}
     )
-    tokenizer = AutoTokenizer.from_pretrained("vikhyatk/moondream2", revision="2025-01-09")
+    tokenizer = AutoTokenizer.from_pretrained(
+        MODEL_SETTINGS['VISION_MODEL'], 
+        revision=MODEL_SETTINGS['VISION_MODEL_REVISION']
+    )
     print("Vision-Language model loaded")
 
     # Get the frame description prompt
@@ -268,7 +364,7 @@ def describe_frames(video_path, frame_numbers):
     print(f"{len(frames)} frames extracted")
 
     print("Describing frames...")
-    batch_size = 8  # Adjust this based on your GPU memory
+    batch_size = FRAME_SELECTION['BATCH_SIZE']  # Get batch size from config
     results = []
 
     for i in tqdm(range(0, len(frames), batch_size), desc="Processing batches"):
@@ -406,10 +502,13 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
             video_path
         ]
         metadata_json = subprocess.check_output(cmd).decode('utf-8')
-        video_metadata = json.loads(metadata_json)
+        metadata = json.loads(metadata_json)
+        # Extract metadata context from tags
+        metadata_context = json.dumps(metadata.get('format', {}).get('tags', {}), indent=2)
     except Exception as e:
         print(f"Warning: Could not get detailed video metadata: {str(e)}")
-        video_metadata = {}
+        metadata = {}
+        metadata_context = ""
 
     # Calculate video duration and other properties
     video = cv2.VideoCapture(video_path)
@@ -419,30 +518,41 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
     video_duration = frame_count / fps if fps else None
     video.release()
 
-    # Determine video type and caption calculations
-    video_type = "Short (<30s)" if video_duration < 30 else "Medium (30-90s)" if video_duration < 90 else "Medium-long (90-150s)" if video_duration < 150 else "Long (>150s)"
-    
-    # Calculate target captions
-    if video_duration > 150:
-        num_captions = max(15, frame_count // 2)
-        caption_calc = f"max(15, {frame_count} // 2)"
-    elif video_duration > 90:
-        base_captions = int(video_duration / 6)
-        num_captions = min(int(base_captions * 1.25), frame_count // 2)
-        num_captions = max(9, num_captions)
-        caption_calc = f"min(max(9, {base_captions} * 1.25), {frame_count} // 2)"
+    # Determine video type based on duration thresholds from config
+    if video_duration < VIDEO_SETTINGS['MIN_VIDEO_DURATION']:
+        video_type = "Short (<30s)"
+    elif video_duration < VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION']:
+        video_type = "Medium (30-90s)"
+    elif video_duration < VIDEO_SETTINGS['LONG_VIDEO_DURATION']:
+        video_type = "Medium-long (90-150s)"
     else:
-        if video_duration < 30:
-            target_captions = int(video_duration / 3.5)
-            num_captions = min(100, max(4, target_captions))
-            caption_calc = f"min(100, max(4, {video_duration} / 3.5))"
+        video_type = "Long (>150s)"
+
+    # Calculate target captions
+    if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION']:
+        num_captions = max(CAPTION['LONG_VIDEO']['MIN_CAPTIONS'], frame_count // 2)
+        caption_calc = f"max({CAPTION['LONG_VIDEO']['MIN_CAPTIONS']}, {frame_count} // 2)"
+    elif video_duration > VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION']:
+        base_captions = int(video_duration / CAPTION['LONG_VIDEO']['INTERVAL_RATIO'])
+        num_captions = min(int(base_captions * 1.25), frame_count // 2)
+        num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
+        caption_calc = f"min(max({CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS']}, {base_captions} * 1.25), {frame_count} // 2)"
+    else:
+        if video_duration < VIDEO_SETTINGS['MIN_VIDEO_DURATION']:
+            target_captions = int(video_duration / CAPTION['SHORT_VIDEO']['INTERVAL'])
+            num_captions = min(CAPTION['SHORT_VIDEO']['MAX_CAPTIONS'], 
+                             max(CAPTION['SHORT_VIDEO']['MIN_CAPTIONS'], target_captions))
+            caption_calc = f"min({CAPTION['SHORT_VIDEO']['MAX_CAPTIONS']}, max({CAPTION['SHORT_VIDEO']['MIN_CAPTIONS']}, {target_captions}))"
         else:
-            caption_interval = 5.0 + (video_duration - 30) * (7.0 - 5.0) / (90 - 30)
+            caption_interval = (CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL'] + 
+                              (video_duration - VIDEO_SETTINGS['MIN_VIDEO_DURATION']) * 
+                              (CAPTION['MEDIUM_VIDEO']['MAX_INTERVAL'] - CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL']) / 
+                              (VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION'] - VIDEO_SETTINGS['MIN_VIDEO_DURATION']))
             target_captions = int(video_duration / caption_interval)
             max_captions = min(int(video_duration / 4), frame_count // 3)
             num_captions = min(target_captions, max_captions)
-            num_captions = max(8, num_captions)
-            caption_calc = f"min(max(8, {target_captions}), {max_captions})"
+            num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
+            caption_calc = f"min(max({CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS']}, {target_captions}), {max_captions})"
 
     # Read the current prompts
     from prompts import get_frame_description_prompt
@@ -475,6 +585,31 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
                 "path": cache_path if embedding_cache_exists else None
             }
         },
+        "configuration": {
+            "video_settings": VIDEO_SETTINGS,
+            "frame_selection": FRAME_SELECTION,
+            "model_settings": MODEL_SETTINGS,
+            "display": DISPLAY,
+            "retry": RETRY,
+            "caption": CAPTION,
+            "similarity": SIMILARITY
+        },
+        "prompts": {
+            "frame_description": frame_description_prompt,
+            "recontextualization": get_recontextualization_prompt(),
+            "final_summary": get_final_summary_prompt(),
+            "synthesis": get_synthesis_prompt(
+                len(descriptions), 
+                video_duration,
+                metadata_context=metadata_context
+            ),
+            "actual_prompts_used": {
+                "frame_description": frame_description_prompt,
+                "synthesis": synthesis_output,  # The actual synthesis prompt used
+                "recontextualization": metadata_context if metadata else None,  # The actual recontextualization context used
+                "final_summary": get_final_summary_prompt() if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION'] else None
+            }
+        },
         "video_metadata": {
             "path": video_path,
             "frame_count": frame_count,
@@ -484,7 +619,7 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
                 "width": width,
                 "height": height
             },
-            "ffprobe_data": video_metadata,
+            "ffprobe_data": metadata,
             "video_type": video_type
         },
         "caption_analysis": {
@@ -496,19 +631,19 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
         },
         "model_info": {
             "frame_description_prompt": frame_description_prompt,
-            "whisper_model": "large-v3-turbo",
+            "whisper_model": MODEL_SETTINGS['WHISPER_MODEL'],
             "clip_model": "ViT-SO400M-14-SigLIP-384",
-            "synthesis_model": "Meta-Llama-3.1-8B-Instruct" if use_local_llm else "gpt-4o"
+            "synthesis_model": MODEL_SETTINGS['LOCAL_LLM_MODEL'] if use_local_llm else MODEL_SETTINGS['GPT_MODEL']
         },
         "processing_stages": {
             "frame_selection": {
                 "method": "clip" if os.environ.get("USE_FRAME_SELECTION") else "regular_sampling",
                 "parameters": {
-                    "novelty_threshold": 0.08,
-                    "min_skip": 10,
-                    "n_clusters": 15
+                    "novelty_threshold": FRAME_SELECTION['NOVELTY_THRESHOLD'],
+                    "min_skip": FRAME_SELECTION['MIN_SKIP_FRAMES'],
+                    "n_clusters": FRAME_SELECTION['NUM_CLUSTERS']
                 } if os.environ.get("USE_FRAME_SELECTION") else {
-                    "sampling_interval": 50
+                    "sampling_interval": VIDEO_SETTINGS['FRAME_SAMPLING_INTERVAL']
                 }
             },
             "transcription": {
@@ -550,41 +685,45 @@ def get_synthesis_prompt(num_keyframes: int, video_duration: float, metadata_con
     print(f"Input: {num_keyframes} keyframes, {video_duration:.1f}s duration")
     print(f"Has metadata context: {bool(metadata_context)}")
     
-    # Calculate number of captions (existing logic)
-    if video_duration > 150:  # > 150s
+    # Calculate number of captions based on video duration
+    if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION']:  # Long videos
         print("Long video detected (>150s)")
-        num_captions = max(15, num_keyframes // 2)
-        print(f"Long video calculation: max(12, {num_keyframes} // 2) = {num_captions}")
-    elif video_duration > 90:  # 90-150s
+        num_captions = max(CAPTION['LONG_VIDEO']['MIN_CAPTIONS'], num_keyframes // 2)
+        print(f"Long video calculation: max({CAPTION['LONG_VIDEO']['MIN_CAPTIONS']}, {num_keyframes} // 2) = {num_captions}")
+    elif video_duration > VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION']:  # Medium-long videos
         print("Medium-long video detected (90-150s)")
-        base_captions = int(video_duration / 6)
+        base_captions = int(video_duration / CAPTION['LONG_VIDEO']['INTERVAL_RATIO'])
         num_captions = min(int(base_captions * 1.25), num_keyframes // 2)
-        num_captions = max(9, num_captions)
+        num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
         print(f"Medium-long video calculation:")
-        print(f"- Base captions (1/6s): {base_captions}")
+        print(f"- Base captions (1/{CAPTION['LONG_VIDEO']['INTERVAL_RATIO']}s): {base_captions}")
         print(f"- After 25% increase: {int(base_captions * 1.25)}")
-        print(f"- Final (min 15, max {num_keyframes//2}): {num_captions}")
+        print(f"- Final (min {CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS']}, max {num_keyframes//2}): {num_captions}")
     else:
-        if video_duration < 30:  # Short videos < 30s
+        if video_duration < VIDEO_SETTINGS['MIN_VIDEO_DURATION']:  # Short videos
             print("Short video detected (<30s)")
-            target_captions = int(video_duration / 3.5)
-            num_captions = min(100, max(4, target_captions))
+            target_captions = int(video_duration / CAPTION['SHORT_VIDEO']['INTERVAL'])
+            num_captions = min(CAPTION['SHORT_VIDEO']['MAX_CAPTIONS'], 
+                             max(CAPTION['SHORT_VIDEO']['MIN_CAPTIONS'], target_captions))
             print(f"Short video calculation:")
-            print(f"- Target: {video_duration:.1f}s / 3.5s = {target_captions}")
-            print(f"- Final: min(100, max(4, {target_captions})) = {num_captions}")
-        else:  # Medium videos 30-90s
+            print(f"- Target: {video_duration:.1f}s / {CAPTION['SHORT_VIDEO']['INTERVAL']}s = {target_captions}")
+            print(f"- Final: min({CAPTION['SHORT_VIDEO']['MAX_CAPTIONS']}, max({CAPTION['SHORT_VIDEO']['MIN_CAPTIONS']}, {target_captions})) = {num_captions}")
+        else:  # Medium videos
             print("Medium video detected (30-90s)")
-            caption_interval = 5.0 + (video_duration - 30) * (7.0 - 5.0) / (90 - 30)
+            caption_interval = (CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL'] + 
+                              (video_duration - VIDEO_SETTINGS['MIN_VIDEO_DURATION']) * 
+                              (CAPTION['MEDIUM_VIDEO']['MAX_INTERVAL'] - CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL']) / 
+                              (VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION'] - VIDEO_SETTINGS['MIN_VIDEO_DURATION']))
             target_captions = int(video_duration / caption_interval)
             max_captions = min(int(video_duration / 4), num_keyframes // 3)
             num_captions = min(target_captions, max_captions)
-            num_captions = max(8, num_captions)
+            num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
             print(f"Medium video calculation:")
             print(f"- Caption interval: {caption_interval:.1f}s")
             print(f"- Initial target: {video_duration:.1f}s / {caption_interval:.1f}s = {target_captions}")
             print(f"- Max captions: min({video_duration:.1f}/4, {num_keyframes}/3) = {max_captions}")
             print(f"- After max cap: min({target_captions}, {max_captions}) = {min(target_captions, max_captions)}")
-            print(f"- Final (after min 8): {num_captions}")
+            print(f"- Final (after min {CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS']}): {num_captions}")
     
     print(f"Final decision: {num_captions} captions for {video_duration:.1f}s video ({num_captions/video_duration:.1f} captions/second)")
     print("================================\n")
@@ -995,7 +1134,7 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
                 print("\nInitializing local Llama model...")
                 pipeline = transformers.pipeline(
                     "text-generation",
-                    model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+                    model=MODEL_SETTINGS['LOCAL_LLM_MODEL'],
                     model_kwargs={"torch_dtype": torch.bfloat16},
                     device_map="auto",
                 )
@@ -1010,7 +1149,7 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
                 outputs = pipeline(
                     messages,
                     max_new_tokens=8000,
-                    temperature=0.3,
+                    temperature=MODEL_SETTINGS['TEMPERATURE'],
                 )
                 raw_response = outputs[0]["generated_text"]
                 
@@ -1087,19 +1226,16 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
             print("\nNo OpenAI API key found in environment")
             return None
 
-        max_retries = 5
-        retry_delay = 1
-        
-        for attempt in range(max_retries):
+        for attempt in range(RETRY['MAX_RETRIES']):
             try:
                 client = OpenAI(api_key=api_key)
                 completion = client.chat.completions.create(
-                    model="gpt-4o",
+                    model=MODEL_SETTINGS['GPT_MODEL'],
                     messages=[
                         {"role": "system", "content": prompt},
                         {"role": "user", "content": content}
                     ],
-                    temperature=0.3
+                    temperature=MODEL_SETTINGS['TEMPERATURE']
                 )
                 response = completion.choices[0].message.content.strip()
                 print("\nRaw OpenAI response:")
@@ -1108,11 +1244,11 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
                 print("-" * 80)
                 return response
             except Exception as e:
-                if attempt == max_retries - 1:  # Last attempt
-                    print(f"\nError getting OpenAI completion after {max_retries} attempts: {str(e)}")
+                if attempt == RETRY['MAX_RETRIES'] - 1:  # Last attempt
+                    print(f"\nError getting OpenAI completion after {RETRY['MAX_RETRIES']} attempts: {str(e)}")
                     return None
-                print(f"\nRetrying OpenAI completion ({attempt + 1}/{max_retries})...")
-                time.sleep(retry_delay * (attempt + 1))
+                print(f"\nRetrying OpenAI completion ({attempt + 1}/{RETRY['MAX_RETRIES']})...")
+                time.sleep(RETRY['INITIAL_DELAY'] * (attempt + 1))
     except Exception as e:
         print(f"\nUnexpected error in get_llm_completion: {str(e)}")
         print("Stack trace:", traceback.format_exc())
@@ -1358,10 +1494,10 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
     
     # Create output directory if needed
     if output_path is None:
-        os.makedirs('outputs', exist_ok=True)
+        os.makedirs(VIDEO_SETTINGS['OUTPUT_DIR'], exist_ok=True)
         base_name = os.path.splitext(os.path.basename(video_path))[0]
-        temp_output = os.path.join('outputs', f'temp_{base_name}.mp4')
-        final_output = os.path.join('outputs', f'captioned_{base_name}.mp4')
+        temp_output = os.path.join(VIDEO_SETTINGS['OUTPUT_DIR'], f'temp_{base_name}.mp4')
+        final_output = os.path.join(VIDEO_SETTINGS['OUTPUT_DIR'], f'captioned_{base_name}.mp4')
     else:
         temp_output = output_path + '.temp'
         final_output = output_path
@@ -1390,8 +1526,8 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             # First pass: Adjust timestamps slightly earlier for better timing
             adjusted_captions = []
             for timestamp, text in synthesis_captions:
-                # Adjust timestamp to be 0.1s earlier, but not before 0
-                adjusted_timestamp = max(0.0, timestamp - 0.1)
+                # Adjust timestamp to be slightly earlier, but not before 0
+                adjusted_timestamp = max(0.0, timestamp - CAPTION['TIMESTAMP_OFFSET'])
                 adjusted_captions.append((adjusted_timestamp, text))
             
             print(f"\nAfter timestamp adjustment: {len(adjusted_captions)} captions")
@@ -1439,15 +1575,15 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             # Get current description
             frame_number, timestamp, description = frame_info[current_desc_idx]
 
-            # Add caption using our existing logic
+            # Add caption using display settings from config
             height, width = frame.shape[:2]
-            margin = 8
-            padding = 10
-            min_line_height = 20
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            max_width = int(width * 0.9)
+            margin = DISPLAY['MARGIN']['CAPTION']
+            padding = DISPLAY['PADDING']
+            min_line_height = DISPLAY['MIN_LINE_HEIGHT']
+            font = DISPLAY['FONT']
+            max_width = int(width * DISPLAY['MAX_WIDTH_RATIO'])
             
-            # Start with timestamp and description (different format for synthesis captions)
+            # Start with timestamp and description
             if use_synthesis_captions:
                 full_text = description  # Synthesis captions already include context
             else:
@@ -1460,7 +1596,7 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             top_lines = []
             current_line = []
             
-            font_scale = min(height * 0.03 / min_line_height, 0.7)
+            font_scale = min(height * 0.03 / min_line_height, DISPLAY['FONT_SCALE']['CAPTION'])
             
             # Split text into lines that fit the width
             for word in words:
@@ -1480,7 +1616,7 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             # Handle transcriptions (bottom overlay)
             bottom_lines = []
             if show_transcriptions:
-                # Find appropriate transcript segment and check if we're within its time period
+                # Find appropriate transcript segment
                 while (current_transcript_idx < len(transcript) - 1 and 
                        current_time >= transcript[current_transcript_idx + 1]["start"]):
                     current_transcript_idx += 1
@@ -1495,27 +1631,11 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                     current_transcript_text = current_transcript_text.replace('"', '"').replace('"', '"')
                     current_transcript_text = current_transcript_text.replace("'", "'").replace("'", "'")
                     
-                    # Adjust font and padding based on resolution tiers
-                    if height >= 1440:  # 2K and above
-                        base_increase = 0.6
-                        bg_padding = 20
-                        bottom_margin = int(height * 0.25)
-                    elif height >= 720:  # HD
-                        base_increase = 0.2
-                        bg_padding = 8
-                        bottom_margin = int(height * 0.15)
-                    else:  # SD
-                        base_increase = 0.1
-                        bg_padding = 5
-                        bottom_margin = int(height * 0.18)
-                    
-                    transcript_font_scale = min(height * 0.025 / min_line_height, 0.6) + base_increase
-                    
                     # Split transcript into lines
                     current_line = []
                     for word in current_transcript_text.split():
                         test_line = ' '.join(current_line + [word])
-                        (text_width, _), _ = cv2.getTextSize(test_line, font, transcript_font_scale, 1)
+                        (text_width, _), _ = cv2.getTextSize(test_line, font, font_scale, 1)
                         
                         if text_width <= max_width - 2 * margin:
                             current_line.append(word)
@@ -1529,40 +1649,30 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
 
             # Calculate box dimensions for top overlay (frame descriptions)
             top_line_count = len(top_lines)
-            # Adjust line height based on resolution
-            if height >= 1440:  # 2K and above
-                line_height = max(min_line_height, int(height * 0.04))
-                padding = 15
-            elif height >= 720:  # HD
-                line_height = max(min_line_height, int(height * 0.03))
-                padding = 10
-            else:  # SD
-                line_height = max(min_line_height, int(height * 0.02))
-                padding = 8
-                
+            line_height = max(min_line_height, int(height * 0.03))
             top_box_height = top_line_count * line_height + 2 * padding
             
             # Create overlay for text background
             overlay = frame.copy()
             cv2.rectangle(overlay, 
-                         (int(margin), int(margin)),
-                         (int(width - margin), int(margin + top_box_height)),
+                         (margin, margin),
+                         (width - margin, margin + top_box_height),
                          (0, 0, 0),
                          -1)
             
             # Blend background overlay with original frame
-            alpha = 0.7
+            alpha = DISPLAY['OVERLAY_ALPHA']
             frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
             
-            # Draw text directly on frame (not on overlay) to keep it fully opaque
+            # Draw text directly on frame
             y = margin + padding + line_height
             for line in top_lines:
                 cv2.putText(frame,
                            line,
-                           (int(margin + padding), int(y)),
+                           (margin + padding, y),
                            font,
                            font_scale,
-                           (255, 255, 255),
+                           DISPLAY['TEXT_COLOR']['WHITE'],
                            1,
                            cv2.LINE_AA)
                 y += line_height
@@ -1573,17 +1683,17 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                 bottom_box_height = bottom_line_count * line_height + 2 * padding
                 
                 # Add speech transcription text (centered with tight background)
-                y = height - bottom_box_height - bottom_margin + padding + line_height
+                y = height - bottom_box_height - margin + padding + line_height
                 for line in bottom_lines:
                     # Calculate text width for centering and background
-                    (text_width, text_height), _ = cv2.getTextSize(line, font, transcript_font_scale, 1)
+                    (text_width, text_height), _ = cv2.getTextSize(line, font, font_scale, 1)
                     x = (width - text_width) // 2  # Center the text
                     
                     # Create tight background just for this line
-                    bg_x1 = int(x - bg_padding)
-                    bg_x2 = int(x + text_width + bg_padding)
-                    bg_y1 = int(y - text_height - bg_padding)
-                    bg_y2 = int(y + bg_padding)
+                    bg_x1 = x - padding
+                    bg_x2 = x + text_width + padding
+                    bg_y1 = y - text_height - padding
+                    bg_y2 = y + padding
                     
                     # Draw background rectangle with transparency
                     overlay = frame.copy()
@@ -1594,13 +1704,13 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                                 -1)
                     frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
                     
-                    # Draw text directly on frame to keep it fully opaque
+                    # Draw text
                     cv2.putText(frame,
                                line,
-                               (int(x), int(y)),
+                               (x, y),
                                font,
-                               transcript_font_scale,
-                               (255, 255, 255),
+                               font_scale,
+                               DISPLAY['TEXT_COLOR']['WHITE'],
                                1,
                                cv2.LINE_AA)
                     y += line_height * 1.5  # Increase spacing between lines
@@ -1624,14 +1734,14 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
     )
     
     # Create a file list for concatenation
-    concat_file = os.path.join('outputs', 'concat_list.txt')
+    concat_file = os.path.join(VIDEO_SETTINGS['OUTPUT_DIR'], 'concat_list.txt')
     with open(concat_file, 'w') as f:
         f.write(f"file '{os.path.abspath(summary_path)}'\n")
         f.write(f"file '{os.path.abspath(temp_output)}'\n")
     
     # Concatenate videos
     print("\nCombining summary and main video...")
-    concat_output = os.path.join('outputs', f'concat_{os.path.basename(temp_output)}')
+    concat_output = os.path.join(VIDEO_SETTINGS['OUTPUT_DIR'], f'concat_{os.path.basename(temp_output)}')
     concat_cmd = [
         'ffmpeg', '-y',
         '-f', 'concat',
