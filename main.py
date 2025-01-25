@@ -2,16 +2,13 @@
 import argparse
 import cv2
 import warnings
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 import torch
 import os
 from tqdm import tqdm
 import numpy as np
 import json
 from datetime import datetime
-import os
-import transformers
 from openai import OpenAI
 from dotenv import load_dotenv
 import time
@@ -20,122 +17,18 @@ import gradio as gr
 import subprocess
 import re
 from difflib import SequenceMatcher
-import ast
-from transformers import pipeline
-import whisper
-import traceback
 from prompts import get_frame_description_prompt, get_recontextualization_prompt, get_final_summary_prompt
-import video_utils  # Add this import
-
-# =============================================================================
-# CONFIGURATION CONSTANTS
-# =============================================================================
-
-# Video Processing Settings
-VIDEO_SETTINGS = {
-    'FRAME_SAMPLING_INTERVAL': 50,  # Interval for regular frame sampling
-    'MIN_VIDEO_DURATION': 30,       # Seconds, threshold for short videos
-    'MEDIUM_VIDEO_DURATION': 90,    # Seconds, threshold for medium videos
-    'LONG_VIDEO_DURATION': 150,     # Seconds, threshold for long videos
-    'OUTPUT_DIR': 'outputs',        # Directory for output files
-    'SUPPORTED_EXTENSIONS': ('.mp4', '.avi', '.mov', '.mkv', '.webm')
-}
-
-# Frame Selection Settings
-FRAME_SELECTION = {
-    'NOVELTY_THRESHOLD': 0.08,      # Threshold for frame uniqueness
-    'MIN_SKIP_FRAMES': 10,          # Minimum frames to skip
-    'NUM_CLUSTERS': 15,             # Number of frame clusters
-    'BATCH_SIZE': 8                 # Batch size for frame processing
-}
-
-# Model Settings
-MODEL_SETTINGS = {
-    'VISION_MODEL': "vikhyatk/moondream2",
-    'VISION_MODEL_REVISION': "2025-01-09",
-    'WHISPER_MODEL': "large",
-    'LOCAL_LLM_MODEL': "meta-llama/Meta-Llama-3.1-8B-Instruct",
-    'GPT_MODEL': "gpt-4o",
-    'TEMPERATURE': 0.3
-}
-
-# UI/Display Settings
-DISPLAY = {
-    'FONT': cv2.FONT_HERSHEY_SIMPLEX,
-    'FONT_SCALE': {
-        'CAPTION': 0.7,
-        'ATTRIBUTION': 0.6,
-        'DEBUG': 0.5
-    },
-    'MARGIN': {
-        'DEFAULT': 10,
-        'TEXT': 40,
-        'CAPTION': 8
-    },
-    'PADDING': 10,
-    'LINE_SPACING': 10,
-    'SECTION_SPACING': 35,
-    'TEXT_COLOR': {
-        'WHITE': (255, 255, 255),
-        'GRAY': (200, 200, 200),
-        'RED': (0, 0, 255)
-    },
-    'OVERLAY_ALPHA': 0.7,
-    'MAX_WIDTH_RATIO': 0.9,         # Percentage of frame width for text
-    'MIN_LINE_HEIGHT': 20
-}
-
-# Retry Settings
-RETRY = {
-    'MAX_RETRIES': 5,
-    'MAX_RECONTEXTUALIZE_RETRIES': 3,
-    'MAX_METADATA_RETRIES': 3,
-    'INITIAL_DELAY': 1,             # Initial retry delay in seconds
-    'MAX_VIDEO_RETRIES': 10         # Maximum retries for video processing
-}
-
-# Caption Generation Settings
-CAPTION = {
-    'SHORT_VIDEO': {
-        'INTERVAL': 3.5,            # Seconds between captions for short videos
-        'MIN_CAPTIONS': 4,
-        'MAX_CAPTIONS': 100
-    },
-    'MEDIUM_VIDEO': {
-        'MIN_CAPTIONS': 8,
-        'BASE_INTERVAL': 5.0,       # Base interval for medium videos
-        'MAX_INTERVAL': 7.0         # Maximum interval for medium videos
-    },
-    'LONG_VIDEO': {
-        'MIN_CAPTIONS': 15,
-        'INTERVAL_RATIO': 6.0       # One caption every 6 seconds
-    },
-    'TIMESTAMP_OFFSET': 0.1         # Seconds to offset timestamps earlier
-}
-
-# String Similarity Settings
-SIMILARITY = {
-    'THRESHOLD': 0.90,              # Threshold for string similarity comparison
-    'NOISE_PHRASES': [
-        "ambient music",
-        "music playing",
-        "background music",
-        "music",
-        "captions",
-        "[Music]",
-        "♪",
-        "♫"
-    ],
-    'BOILERPLATE_PHRASES': [
-        "work of fiction",
-        "any resemblance",
-        "coincidental",
-        "unintentional",
-        "all rights reserved",
-        "copyright",
-        "trademark"
-    ]
-}
+import video_utils
+from config import (
+    VIDEO_SETTINGS,
+    FRAME_SELECTION,
+    MODEL_SETTINGS,
+    DISPLAY,
+    RETRY,
+    CAPTION,
+    SIMILARITY
+)
+from model_loader import model_context
 
 def similar(a, b, threshold=SIMILARITY['THRESHOLD']):
     """Return True if strings are similar above threshold."""
@@ -243,14 +136,21 @@ def transcribe_video(video_path):
         }]
     
     try:
-        model = whisper.load_model("large")
-        result = model.transcribe(audio_path)
-        timestamp = int(time.time())
-        raw_output_path = os.path.join('outputs', f'whisper_raw_{timestamp}.txt')
-        
-        processed_transcript = process_transcript(result["segments"])
-        
-        return clean_transcript(processed_transcript)
+        with model_context("whisper") as model:
+            if model is None:
+                return [{
+                    "start": 0,
+                    "end": 0,
+                    "text": ""
+                }]
+                
+            result = model.transcribe(audio_path)
+            timestamp = int(time.time())
+            raw_output_path = os.path.join('outputs', f'whisper_raw_{timestamp}.txt')
+            
+            processed_transcript = process_transcript(result["segments"])
+            
+            return clean_transcript(processed_transcript)
             
     except Exception as e:
         return [{
@@ -267,54 +167,45 @@ def transcribe_video(video_path):
 
 # Function to describe frames using a Vision-Language Model
 def describe_frames(video_path, frame_numbers):
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_SETTINGS['VISION_MODEL'],
-        revision=MODEL_SETTINGS['VISION_MODEL_REVISION'],
-        trust_remote_code=True,
-        device_map={"": "cuda"}
-    )
-    tokenizer = AutoTokenizer.from_pretrained(
-        MODEL_SETTINGS['VISION_MODEL'], 
-        revision=MODEL_SETTINGS['VISION_MODEL_REVISION']
-    )
+    with model_context("moondream") as model_tuple:
+        if model_tuple is None:
+            return []
+            
+        model, tokenizer = model_tuple
+        prompt = get_frame_description_prompt()
 
-    prompt = get_frame_description_prompt()
+        props = video_utils.get_video_properties(video_path)
+        fps = props['fps']
+        frames = []
 
-    props = video_utils.get_video_properties(video_path)
-    fps = props['fps']
-    frames = []
+        video = cv2.VideoCapture(video_path)
+        for frame_number in frame_numbers:
+            video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            success, frame = video.read()
+            if success:
+                timestamp = frame_number / fps
+                frames.append((frame_number, frame, timestamp))
 
-    video = cv2.VideoCapture(video_path)
-    for frame_number in frame_numbers:
-        video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-        success, frame = video.read()
-        if success:
-            timestamp = frame_number / fps
-            frames.append((frame_number, frame, timestamp))
+        video.release()
 
-    video.release()
+        batch_size = FRAME_SELECTION['BATCH_SIZE']
+        results = []
 
-    batch_size = FRAME_SELECTION['BATCH_SIZE']
-    results = []
+        for i in tqdm(range(0, len(frames), batch_size), desc="Processing batches"):
+            batch_frames = frames[i:i+batch_size]
+            batch_images = [Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)) for _, frame, _ in batch_frames]
+            batch_prompts = [prompt] * len(batch_images)
 
-    for i in tqdm(range(0, len(frames), batch_size), desc="Processing batches"):
-        batch_frames = frames[i:i+batch_size]
-        batch_images = [Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)) for _, frame, _ in batch_frames]
-        batch_prompts = [prompt] * len(batch_images)
+            batch_answers = model.batch_answer(
+                images=batch_images,
+                prompts=batch_prompts,
+                tokenizer=tokenizer,
+            )
 
-        batch_answers = model.batch_answer(
-            images=batch_images,
-            prompts=batch_prompts,
-            tokenizer=tokenizer,
-        )
+            for (frame_number, _, timestamp), answer in zip(batch_frames, batch_answers):
+                results.append((frame_number, timestamp, answer))
 
-        for (frame_number, _, timestamp), answer in zip(batch_frames, batch_answers):
-            results.append((frame_number, timestamp, answer))
-
-    del model
-    torch.cuda.empty_cache()
-
-    return results
+        return results
 
 def display_described_frames(video_path, descriptions):
     video = cv2.VideoCapture(video_path)
@@ -836,9 +727,7 @@ def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, u
                 break
             elif attempt < max_retries - 1:
                 time.sleep(2 * (attempt + 1))
-            else:
-                return None, None
-
+        
         if not final_summary:
             return None, None
             
@@ -920,74 +809,63 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
     """Helper function to get LLM completion with error handling."""
     try:
         if use_local_llm:
-            pipeline = None
-            try:
-                pipeline = transformers.pipeline(
-                    "text-generation",
-                    model=MODEL_SETTINGS['LOCAL_LLM_MODEL'],
-                    model_kwargs={"torch_dtype": torch.bfloat16},
-                    device_map="auto",
-                )
-                
-                # Format messages like in the docs
-                messages = [
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": content},
-                ]
-                
-                outputs = pipeline(
-                    messages,
-                    max_new_tokens=8000,
-                    temperature=MODEL_SETTINGS['TEMPERATURE'],
-                )
-                raw_response = outputs[0]["generated_text"]
-                
-                # Extract just the assistant's response
-                try:
-                    # Convert the list object to a string first
-                    raw_response_str = str(raw_response)
+            with model_context("llama") as pipeline:
+                if pipeline is None:
+                    return None
                     
-                    # Try different quote styles and formats
-                    patterns = [
-                        "'role': 'assistant', 'content': '",
-                        '"role": "assistant", "content": "',
-                        "'role': 'assistant', 'content': \"",
-                        "role': 'assistant', 'content': '",
-                        "role\": \"assistant\", \"content\": \""
+                try:
+                    # Format messages like in the docs
+                    messages = [
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": content},
                     ]
                     
-                    content = None
-                    for pattern in patterns:
-                        assistant_start = raw_response_str.find(pattern)
-                        if assistant_start != -1:
-                            content_start = assistant_start + len(pattern)
-                            # Try different ending patterns
-                            for end_pattern in ["'}", '"}', "\"}", "'}]", '"}]']:
-                                content_end = raw_response_str.find(end_pattern, content_start)
-                                if content_end != -1:
-                                    content = raw_response_str[content_start:content_end]
-                                    # Unescape the content
-                                    content = content.encode().decode('unicode_escape')
-                                    return content
+                    outputs = pipeline(
+                        messages,
+                        max_new_tokens=8000,
+                        temperature=MODEL_SETTINGS['TEMPERATURE'],
+                    )
+                    raw_response = outputs[0]["generated_text"]
                     
-                    # If we get here, try to find XML tags directly
-                    if "<summary>" in raw_response_str and "</summary>" in raw_response_str:
-                        return raw_response_str
+                    # Extract just the assistant's response
+                    try:
+                        # Convert the list object to a string first
+                        raw_response_str = str(raw_response)
+                        
+                        # Try different quote styles and formats
+                        patterns = [
+                            "'role': 'assistant', 'content': '",
+                            '"role": "assistant", "content": "',
+                            "'role': 'assistant', 'content': \"",
+                            "role': 'assistant', 'content': '",
+                            "role\": \"assistant\", \"content\": \""
+                        ]
+                        
+                        content = None
+                        for pattern in patterns:
+                            assistant_start = raw_response_str.find(pattern)
+                            if assistant_start != -1:
+                                content_start = assistant_start + len(pattern)
+                                # Try different ending patterns
+                                for end_pattern in ["'}", '"}', "\"}", "'}]", '"}]']:
+                                    content_end = raw_response_str.find(end_pattern, content_start)
+                                    if content_end != -1:
+                                        content = raw_response_str[content_start:content_end]
+                                        # Unescape the content
+                                        content = content.encode().decode('unicode_escape')
+                                        return content
+                        
+                        # If we get here, try to find XML tags directly
+                        if "<summary>" in raw_response_str and "</summary>" in raw_response_str:
+                            return raw_response_str
+                        
+                        return None
                     
-                    return None
-                
+                    except Exception as e:
+                        return None
+                        
                 except Exception as e:
                     return None
-                    
-            except Exception as e:
-                return None
-                    
-            finally:
-                # Clean up resources
-                if pipeline is not None:
-                    del pipeline
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
         
         # OpenAI API fallback
         api_key = os.environ.get("OPENAI_API_KEY")
@@ -1206,6 +1084,7 @@ def create_summary_clip(summary: str, width: int, height: int, fps: int, debug: 
     
     out.release()
     return temp_summary_path, duration
+
 def create_captioned_video(video_path: str, descriptions: list, summary: str, transcript: list, synthesis_captions: list = None, use_synthesis_captions: bool = False, show_transcriptions: bool = False, output_path: str = None, debug: bool = False, debug_metadata: dict = None) -> str:
     """Create a video with persistent captions from keyframe descriptions and transcriptions."""
     

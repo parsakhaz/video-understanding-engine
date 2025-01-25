@@ -5,18 +5,13 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics.pairwise import cosine_similarity
-import open_clip
 import sys
 from tqdm import tqdm
 import torch.nn.functional as F
 from PIL import Image
 import os
 from sklearn.cluster import KMeans
-
-def load_model():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model, _, preprocess = open_clip.create_model_and_transforms('ViT-SO400M-14-SigLIP-384', pretrained='webli', device=device)
-    return model.eval(), preprocess, device
+from model_loader import model_context
 
 def process_batch(frames, model, preprocess, device):
     batch_size = len(frames)
@@ -85,39 +80,43 @@ def get_or_compute_embeddings(video_path):
         return np.load(cache_file)
 
     print(f"No cache found. Loading model and computing embeddings for {video_path}")
-    model, preprocess, device = load_model()
+    with model_context("clip") as model_tuple:
+        if model_tuple is None:
+            print("Failed to load CLIP model")
+            return None
+            
+        model, preprocess, device = model_tuple
+        print(f"Computing embeddings for {video_path}")
+        cap = cv2.VideoCapture(video_path)
+        frame_embeddings = []
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        batch_size = 64
 
-    print(f"Computing embeddings for {video_path}")
-    cap = cv2.VideoCapture(video_path)
-    frame_embeddings = []
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    batch_size = 64
+        with tqdm(total=total_frames, desc="Processing frames") as pbar:
+            while cap.isOpened():
+                batch_frames = []
+                for _ in range(batch_size):
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    batch_frames.append(frame)
 
-    with tqdm(total=total_frames, desc="Processing frames") as pbar:
-        while cap.isOpened():
-            batch_frames = []
-            for _ in range(batch_size):
-                ret, frame = cap.read()
-                if not ret:
+                if not batch_frames:
                     break
-                batch_frames.append(frame)
 
-            if not batch_frames:
-                break
+                batch_embeddings = process_batch(batch_frames, model, preprocess, device)
+                frame_embeddings.extend(batch_embeddings)
+                pbar.update(len(batch_frames))
 
-            batch_embeddings = process_batch(batch_frames, model, preprocess, device)
-            frame_embeddings.extend(batch_embeddings)
-            pbar.update(len(batch_frames))
+        cap.release()
+        frame_embeddings = np.array(frame_embeddings)
 
-    cap.release()
-    frame_embeddings = np.array(frame_embeddings)
+        # Save embeddings to cache
+        os.makedirs(cache_dir, exist_ok=True)
+        np.save(cache_file, frame_embeddings)
+        print(f"Cached embeddings saved to {cache_file}")
 
-    # Save embeddings to cache
-    os.makedirs(cache_dir, exist_ok=True)
-    np.save(cache_file, frame_embeddings)
-    print(f"Cached embeddings saved to {cache_file}")
-
-    return frame_embeddings
+        return frame_embeddings
 
 def process_video(video_path):
     # Get embeddings (either from cache or by computing)
