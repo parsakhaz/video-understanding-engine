@@ -143,36 +143,27 @@ def similar(a, b, threshold=SIMILARITY['THRESHOLD']):
 
 def clean_transcript(segments):
     """Clean up transcript by removing duplicates and background noise."""
-    # Common background noise phrases to filter
     noise_phrases = SIMILARITY['NOISE_PHRASES']
-    
-    # Common boilerplate/disclaimer phrases to detect
     boilerplate_phrases = SIMILARITY['BOILERPLATE_PHRASES']
     
-    # First pass: Remove segments that are just noise or boilerplate
     filtered_segments = []
     for segment in segments:
         text = segment["text"].strip().lower()
         
-        # Skip if just noise
         if any(phrase in text.lower() for phrase in noise_phrases):
             continue
             
-        # Skip if contains multiple boilerplate phrases
         boilerplate_count = sum(1 for phrase in boilerplate_phrases if phrase in text.lower())
         if boilerplate_count >= 2:
             continue
             
         filtered_segments.append(segment)
     
-    # Second pass: Remove duplicates and near-duplicates
     cleaned_segments = []
     for i, current in enumerate(filtered_segments):
-        # Skip if too similar to previous segment
         if i > 0 and similar(current["text"], filtered_segments[i-1]["text"]):
             continue
             
-        # Skip if too similar to any of the next 3 segments (for repeated content)
         next_segments = filtered_segments[i+1:i+4]
         if any(similar(current["text"], next_seg["text"]) for next_seg in next_segments):
             continue
@@ -215,9 +206,6 @@ def process_transcript(segments):
 
 # Function to transcribe audio from a video file using Whisper model
 def transcribe_video(video_path):
-    print(f"Loading audio model")
-
-    # Get video duration using ffprobe
     duration = get_video_duration(video_path)
     if duration is None:
         return [{
@@ -226,7 +214,6 @@ def transcribe_video(video_path):
             "text": ""
         }]
 
-    # Check if video has an audio stream using ffprobe
     has_audio = False
     try:
         cmd = [
@@ -239,19 +226,16 @@ def transcribe_video(video_path):
         result = subprocess.run(cmd, capture_output=True, text=True)
         has_audio = len(result.stdout.strip()) > 0
     except subprocess.CalledProcessError:
-        print("Error checking audio stream")
+        pass
     if not has_audio:
-        print("No audio track detected. Processing video with empty transcript.")
         return [{
             "start": 0,
             "end": 0,
             "text": ""
         }]
 
-    # Extract audio from video
     audio_path = extract_audio(video_path)
     if not audio_path:
-        print("Failed to extract audio")
         return [{
             "start": 0,
             "end": 0,
@@ -259,54 +243,30 @@ def transcribe_video(video_path):
         }]
     
     try:
-        # Load Whisper model
-        print("Loading Whisper model...")
         model = whisper.load_model("large")
-        
-        print("Transcribing audio...")
-        
-        # Run transcription
         result = model.transcribe(audio_path)
-        
-        # Save raw output for debugging
         timestamp = int(time.time())
         raw_output_path = os.path.join('outputs', f'whisper_raw_{timestamp}.txt')
         
-        # # Save raw output with detailed information
-        # with open(raw_output_path, 'w', encoding='utf-8') as f:
-        #     f.write("=== RAW WHISPER OUTPUT ===\n\n")
-        #     f.write(f"Video path: {video_path}\n")
-        #     f.write(f"Video duration: {duration:.2f}s\n")
-        #     f.write(f"Timestamp: {timestamp}\n")
-        #     f.write("\n=== FULL RESULT ===\n")
-        #     f.write(json.dumps(result, indent=2, ensure_ascii=False))
-        
-        # print(f"\nRaw output saved to: {raw_output_path}")
-        
-        # Process segments
         processed_transcript = process_transcript(result["segments"])
         
-        # Clean up the transcript
         return clean_transcript(processed_transcript)
             
     except Exception as e:
-        print(f"Error during transcription: {str(e)}")
         return [{
             "start": 0,
             "end": 0,
             "text": ""
         }]
     finally:
-        # Clean up temporary files
         try:
             if os.path.exists(audio_path):
                 os.remove(audio_path)
-        except Exception as e:
-            print(f"Error cleaning up temporary files: {str(e)}")
+        except Exception:
+            pass
 
 # Function to describe frames using a Vision-Language Model
 def describe_frames(video_path, frame_numbers):
-    print("Loading Vision-Language model...")
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_SETTINGS['VISION_MODEL'],
         revision=MODEL_SETTINGS['VISION_MODEL_REVISION'],
@@ -317,13 +277,9 @@ def describe_frames(video_path, frame_numbers):
         MODEL_SETTINGS['VISION_MODEL'], 
         revision=MODEL_SETTINGS['VISION_MODEL_REVISION']
     )
-    print("Vision-Language model loaded")
 
-    # Get the frame description prompt
     prompt = get_frame_description_prompt()
 
-    print("Extracting frames...")
-    # Get video properties using video_utils
     props = video_utils.get_video_properties(video_path)
     fps = props['fps']
     frames = []
@@ -337,10 +293,8 @@ def describe_frames(video_path, frame_numbers):
             frames.append((frame_number, frame, timestamp))
 
     video.release()
-    print(f"{len(frames)} frames extracted")
 
-    print("Describing frames...")
-    batch_size = FRAME_SELECTION['BATCH_SIZE']  # Get batch size from config
+    batch_size = FRAME_SELECTION['BATCH_SIZE']
     results = []
 
     for i in tqdm(range(0, len(frames), batch_size), desc="Processing batches"):
@@ -357,10 +311,8 @@ def describe_frames(video_path, frame_numbers):
         for (frame_number, _, timestamp), answer in zip(batch_frames, batch_answers):
             results.append((frame_number, timestamp, answer))
 
-    # Unload the model
     del model
-    torch.cuda.empty_cache()  # If using CUDA
-    print("Vision-Language model unloaded")
+    torch.cuda.empty_cache()
 
     return results
 
@@ -376,7 +328,6 @@ def display_described_frames(video_path, descriptions):
         line_spacing = 10
         margin = 10
 
-        # Split caption into lines
         words = caption.split()
         lines = []
         current_line = []
@@ -394,14 +345,11 @@ def display_described_frames(video_path, descriptions):
         if current_line:
             lines.append(' '.join(current_line))
 
-        # Calculate caption height
         (_, text_height), _ = cv2.getTextSize('Tg', font, font_scale, font_thickness)
         total_height = (text_height + line_spacing) * len(lines) + 2 * margin
 
-        # Create caption image
         caption_image = np.zeros((total_height, width, 3), dtype=np.uint8)
 
-        # Add text to the caption image
         y = margin + text_height
         for line in lines:
             cv2.putText(caption_image, line, (margin, y), font, font_scale, (255, 255, 255), font_thickness)
@@ -409,44 +357,34 @@ def display_described_frames(video_path, descriptions):
 
         return np.vstack((caption_image, frame))
 
-    print("\nKey controls:")
-    print("  Right arrow or Space: Next frame")
-    print("  Left arrow: Previous frame")
-    print("  'q': Quit")
-
     try:
         while True:
             frame_number, timestamp, description = descriptions[current_index]
             video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
             success, frame = video.read()
             if not success:
-                print(f"Failed to read frame {frame_number}")
                 break
 
-            # Resize the frame if it's too large
             max_height = 800
             height, width = frame.shape[:2]
             if height > max_height:
                 ratio = max_height / height
                 frame = cv2.resize(frame, (int(width * ratio), max_height))
 
-            # Add caption to the frame
             frame_with_caption = add_caption_to_frame(frame, f"[{timestamp:.2f}s] Frame {frame_number}: {description}")
 
-            # Display the frame with the caption
             cv2.imshow('Video Frames', frame_with_caption)
             cv2.setWindowTitle('Video Frames', f"Frame {frame_number}")
 
-            # Wait for key press with a timeout
-            key = cv2.waitKey(100) & 0xFF  # Wait for 100ms
-            if key == ord('q'):  # Press 'q' to quit
+            key = cv2.waitKey(100) & 0xFF
+            if key == ord('q'):
                 break
-            elif key in (83, 32):  # Right arrow or space bar for next frame
+            elif key in (83, 32):
                 current_index = min(current_index + 1, len(descriptions) - 1)
-            elif key == 81:  # Left arrow for previous frame
+            elif key == 81:
                 current_index = max(current_index - 1, 0)
     except KeyboardInterrupt:
-        print("\nDisplay interrupted by user.")
+        pass
     finally:
         video.release()
         cv2.destroyAllWindows()
@@ -454,11 +392,9 @@ def display_described_frames(video_path, descriptions):
 def get_frame_count(video_path):
     video = cv2.VideoCapture(video_path)
     if not video.isOpened():
-        print(f"Error: Could not open video {video_path}")
         return 0
     frame_count = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
     video.release()
-    print(f"Total frames: {frame_count}")
     return frame_count
 
 def save_output(video_path, frame_count, transcript, descriptions, summary, total_run_time, synthesis_output=None, synthesis_captions=None, use_local_llm=False):
@@ -467,17 +403,14 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     filename = f"logs/{timestamp}_{video_name}.json"
 
-    # Get detailed video metadata using video_utils
     metadata, metadata_context = video_utils.get_video_metadata(video_path)
 
-    # Get video properties using video_utils
     props = video_utils.get_video_properties(video_path)
     fps = props['fps']
     width = props['frame_width']
     height = props['frame_height']
     video_duration = frame_count / fps if fps else None
 
-    # Determine video type based on duration thresholds from config
     if video_duration < VIDEO_SETTINGS['MIN_VIDEO_DURATION']:
         video_type = "Short (<30s)"
     elif video_duration < VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION']:
@@ -487,7 +420,6 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
     else:
         video_type = "Long (>150s)"
 
-    # Calculate target captions
     if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION']:
         num_captions = max(CAPTION['LONG_VIDEO']['MIN_CAPTIONS'], frame_count // 2)
         caption_calc = f"max({CAPTION['LONG_VIDEO']['MIN_CAPTIONS']}, {frame_count} // 2)"
@@ -513,11 +445,9 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
             num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
             caption_calc = f"min(max({CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS']}, {target_captions}), {max_captions})"
 
-    # Read the current prompts
     from prompts import get_frame_description_prompt
     frame_description_prompt = get_frame_description_prompt()
 
-    # Get GPU memory usage if available
     gpu_memory = {}
     if torch.cuda.is_available():
         try:
@@ -527,10 +457,9 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
                     "allocated": torch.cuda.memory_allocated(i),
                     "cached": torch.cuda.memory_reserved(i)
                 }
-        except Exception as e:
-            print(f"Warning: Could not get GPU memory info: {str(e)}")
+        except Exception:
+            pass
 
-    # Check for embedding cache
     cache_path = os.path.join('embedding_cache', f'{video_name}.npy')
     embedding_cache_exists = os.path.exists(cache_path)
 
@@ -564,8 +493,8 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
             ),
             "actual_prompts_used": {
                 "frame_description": frame_description_prompt,
-                "synthesis": synthesis_output,  # The actual synthesis prompt used
-                "recontextualization": metadata_context if metadata else None,  # The actual recontextualization context used
+                "synthesis": synthesis_output,
+                "recontextualization": metadata_context if metadata else None,
                 "final_summary": get_final_summary_prompt() if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION'] else None
             }
         },
@@ -628,47 +557,28 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
             }
         },
         "error_log": {
-            "warnings": [],  # Populated by warning handler
-            "errors": [],    # Populated by error handler
-            "retries": {}    # Populated by retry tracking
+            "warnings": [],
+            "errors": [],
+            "retries": {}
         }
     }
 
     with open(filename, 'w') as f:
         json.dump(output, f, indent=2)
-    print(f"Output saved to {filename}")
 
 def get_synthesis_prompt(num_keyframes: int, video_duration: float, metadata_context: str = "") -> str:
-    """Generate a dynamic synthesis prompt based on number of keyframes, video duration, and metadata."""
-    print("\n=== Caption Calculation Logic ===")
-    print(f"Input: {num_keyframes} keyframes, {video_duration:.1f}s duration")
-    print(f"Has metadata context: {bool(metadata_context)}")
-    
-    # Calculate number of captions based on video duration
-    if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION']:  # Long videos
-        print("Long video detected (>150s)")
+    if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION']:
         num_captions = max(CAPTION['LONG_VIDEO']['MIN_CAPTIONS'], num_keyframes // 2)
-        print(f"Long video calculation: max({CAPTION['LONG_VIDEO']['MIN_CAPTIONS']}, {num_keyframes} // 2) = {num_captions}")
-    elif video_duration > VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION']:  # Medium-long videos
-        print("Medium-long video detected (90-150s)")
+    elif video_duration > VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION']:
         base_captions = int(video_duration / CAPTION['LONG_VIDEO']['INTERVAL_RATIO'])
         num_captions = min(int(base_captions * 1.25), num_keyframes // 2)
         num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
-        print(f"Medium-long video calculation:")
-        print(f"- Base captions (1/{CAPTION['LONG_VIDEO']['INTERVAL_RATIO']}s): {base_captions}")
-        print(f"- After 25% increase: {int(base_captions * 1.25)}")
-        print(f"- Final (min {CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS']}, max {num_keyframes//2}): {num_captions}")
     else:
-        if video_duration < VIDEO_SETTINGS['MIN_VIDEO_DURATION']:  # Short videos
-            print("Short video detected (<30s)")
+        if video_duration < VIDEO_SETTINGS['MIN_VIDEO_DURATION']:
             target_captions = int(video_duration / CAPTION['SHORT_VIDEO']['INTERVAL'])
             num_captions = min(CAPTION['SHORT_VIDEO']['MAX_CAPTIONS'], 
                              max(CAPTION['SHORT_VIDEO']['MIN_CAPTIONS'], target_captions))
-            print(f"Short video calculation:")
-            print(f"- Target: {video_duration:.1f}s / {CAPTION['SHORT_VIDEO']['INTERVAL']}s = {target_captions}")
-            print(f"- Final: min({CAPTION['SHORT_VIDEO']['MAX_CAPTIONS']}, max({CAPTION['SHORT_VIDEO']['MIN_CAPTIONS']}, {target_captions})) = {num_captions}")
-        else:  # Medium videos
-            print("Medium video detected (30-90s)")
+        else:
             caption_interval = (CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL'] + 
                               (video_duration - VIDEO_SETTINGS['MIN_VIDEO_DURATION']) * 
                               (CAPTION['MEDIUM_VIDEO']['MAX_INTERVAL'] - CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL']) / 
@@ -677,17 +587,7 @@ def get_synthesis_prompt(num_keyframes: int, video_duration: float, metadata_con
             max_captions = min(int(video_duration / 4), num_keyframes // 3)
             num_captions = min(target_captions, max_captions)
             num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
-            print(f"Medium video calculation:")
-            print(f"- Caption interval: {caption_interval:.1f}s")
-            print(f"- Initial target: {video_duration:.1f}s / {caption_interval:.1f}s = {target_captions}")
-            print(f"- Max captions: min({video_duration:.1f}/4, {num_keyframes}/3) = {max_captions}")
-            print(f"- After max cap: min({target_captions}, {max_captions}) = {min(target_captions, max_captions)}")
-            print(f"- Final (after min {CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS']}): {num_captions}")
-    
-    print(f"Final decision: {num_captions} captions for {video_duration:.1f}s video ({num_captions/video_duration:.1f} captions/second)")
-    print("================================\n")
 
-    # Build the prompt with optional metadata context
     metadata_section = ""
     if metadata_context:
         metadata_section = f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions, with the following important context about the video's origin and purpose:
@@ -789,72 +689,47 @@ Timestamped descriptions of key frames
 
 def chunk_video_data(transcript: list, descriptions: list, chunk_duration: int = 60) -> list:
     """Split video data into chunks for processing longer videos."""
-    print("\n=== Video Chunking Logic ===")
-    print(f"Total video length: {descriptions[-1][1]:.1f}s")
-    print(f"Base chunk duration: {chunk_duration}s")
-    print(f"Total descriptions: {len(descriptions)}")
-    print(f"Total transcript segments: {len(transcript)}")
-    
     chunks = []
     current_chunk_start = 0
-    min_descriptions_per_chunk = 4  # Ensure at least 4 descriptions per chunk
+    min_descriptions_per_chunk = 4
     
-    while current_chunk_start < descriptions[-1][1]:  # Until we reach the end timestamp
+    while current_chunk_start < descriptions[-1][1]:
         current_chunk_end = current_chunk_start + chunk_duration
         
-        # Get descriptions in this time window
         chunk_descriptions = [
             desc for desc in descriptions 
             if current_chunk_start <= desc[1] < current_chunk_end
         ]
         
-        print(f"\nChunk {len(chunks) + 1}:")
-        print(f"- Time window: {current_chunk_start:.1f}s - {current_chunk_end:.1f}s")
-        print(f"- Initial descriptions: {len(chunk_descriptions)}")
-        
-        # If chunk has too few descriptions, extend the window
         original_end = current_chunk_end
         while len(chunk_descriptions) < min_descriptions_per_chunk and current_chunk_end < descriptions[-1][1]:
-            current_chunk_end += 15  # Extend by 15 seconds
+            current_chunk_end += 15
             chunk_descriptions = [
                 desc for desc in descriptions 
                 if current_chunk_start <= desc[1] < current_chunk_end
             ]
-            if current_chunk_end > original_end:
-                print(f"- Extended window to {current_chunk_end:.1f}s to get more descriptions: now have {len(chunk_descriptions)}")
         
-        # Get transcript segments in this time window
         chunk_transcript = [
             seg for seg in transcript
             if (seg["start"] >= current_chunk_start and seg["start"] < current_chunk_end) or
                (seg["end"] > current_chunk_start and seg["end"] <= current_chunk_end)
         ]
         
-        if chunk_descriptions:  # Only add chunk if it has descriptions
+        if chunk_descriptions:
             chunks.append((chunk_transcript, chunk_descriptions))
-            print(f"- Final chunk size: {current_chunk_end - current_chunk_start:.1f}s")
-            print(f"- Final descriptions: {len(chunk_descriptions)}")
-            print(f"- Transcript segments: {len(chunk_transcript)}")
-        else:
-            print("- Skipping chunk: no descriptions found")
         
         current_chunk_start = current_chunk_end
     
-    print(f"\nFinal chunks: {len(chunks)}")
-    print("=========================\n")
     return chunks
 
 def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, use_local_llm=False, video_path: str = None):
-    # Load environment variables from .env file
     load_dotenv()
 
-    # Extract metadata at start
     metadata_context = ""
     if video_path:
         max_metadata_retries = 3
         for attempt in range(max_metadata_retries):
             try:
-                print(f"\nExtracting video metadata (attempt {attempt + 1}/{max_metadata_retries})...")
                 cmd = [
                     'ffprobe',
                     '-v', 'quiet',
@@ -866,15 +741,11 @@ def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, u
                 metadata_json = subprocess.check_output(cmd).decode('utf-8')
                 metadata = json.loads(metadata_json)
                 
-                # Extract relevant metadata fields
                 format_metadata = metadata.get('format', {}).get('tags', {})
                 title = format_metadata.get('title', '')
                 artist = format_metadata.get('artist', '')
                 duration = float(metadata.get('format', {}).get('duration', 0))
                 
-                print(f"Found metadata - Title: {title}, Artist: {artist}, Duration: {duration:.2f}s")
-                
-                # Format metadata context
                 metadata_context = "Video Metadata:\n"
                 if title:
                     metadata_context += f"- Title: {title}\n"
@@ -882,7 +753,6 @@ def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, u
                     metadata_context += f"- Creator: {artist}\n"
                 metadata_context += f"- Duration: {duration:.2f} seconds\n"
                 
-                # Add any other relevant metadata fields
                 for key, value in format_metadata.items():
                     if key not in ['title', 'artist'] and value:
                         metadata_context += f"- {key}: {value}\n"
