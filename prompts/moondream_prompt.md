@@ -1,1 +1,0 @@
-Describe this image in extreme detail.

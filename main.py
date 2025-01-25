@@ -24,6 +24,13 @@ import ast
 from transformers import pipeline
 import whisper
 import traceback
+from prompts.utils.prompt_loader import (
+    load_synthesis_base,
+    load_synthesis_recontextualize,
+    load_synthesis_chunk,
+    load_moondream,
+    load_metadata_context
+)
 
 def similar(a, b, threshold=0.90):
     """Return True if strings are similar above threshold."""
@@ -248,9 +255,9 @@ def describe_frames(video_path, frame_numbers):
     tokenizer = AutoTokenizer.from_pretrained("vikhyatk/moondream2", revision="2025-01-09")
     print("Vision-Language model loaded")
 
-    # Load prompt from file
-    with open('prompts/moondream_prompt.md', 'r') as file:
-        prompt = file.read().strip()
+    # Load prompt using the new loader
+    prompt_loader = load_moondream()
+    prompt = prompt_loader({})  # Call the loader function with empty variables
 
     print("Extracting frames...")
     video = cv2.VideoCapture(video_path)
@@ -444,13 +451,39 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
             num_captions = max(8, num_captions)
             caption_calc = f"min(max(8, {target_captions}), {max_captions})"
 
-    # Read the current prompts
-    moondream_prompt = ""
-    try:
-        with open('prompts/moondream_prompt.md', 'r') as prompt_file:
-            moondream_prompt = prompt_file.read().strip()
-    except Exception as e:
-        print(f"Warning: Could not read Moondream prompt: {str(e)}")
+    # Load prompt templates as raw text for logging
+    prompts_info = {}
+    prompt_files = {
+        'moondream': 'frame_description/moondream.jsx',
+        'synthesis_base': 'synthesis/base.jsx',
+        'synthesis_recontextualize': 'synthesis/recontextualize.jsx',
+        'synthesis_chunk': 'synthesis/chunk.jsx',
+        'metadata_context': 'synthesis/metadata_context.jsx'
+    }
+    
+    prompts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prompts')
+    for name, path in prompt_files.items():
+        full_path = os.path.join(prompts_dir, path)
+        try:
+            with open(full_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                # Extract just the template part
+                template_match = re.search(r'export\s+default\s*`([^`]+)`', content, re.DOTALL)
+                if template_match:
+                    prompts_info[name] = {
+                        'path': path,
+                        'template': template_match.group(1)
+                    }
+                else:
+                    prompts_info[name] = {
+                        'path': path,
+                        'error': 'No template found in file'
+                    }
+        except Exception as e:
+            prompts_info[name] = {
+                'path': path,
+                'error': str(e)
+            }
 
     # Get GPU memory usage if available
     gpu_memory = {}
@@ -499,7 +532,7 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
             "actual_captions_generated": len(synthesis_captions) if synthesis_captions else 0
         },
         "model_info": {
-            "moondream_prompt": moondream_prompt,
+            "prompts": prompts_info,
             "whisper_model": "large-v3-turbo",
             "clip_model": "ViT-SO400M-14-SigLIP-384",
             "synthesis_model": "Meta-Llama-3.1-8B-Instruct" if os.environ.get("USE_LOCAL_LLM") else "gpt-4o"
@@ -544,8 +577,8 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
         }
     }
 
-    with open(filename, 'w') as f:
-        json.dump(output, f, indent=2)
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(output, f, indent=2, ensure_ascii=False)
     print(f"Output saved to {filename}")
 
 def get_synthesis_prompt(num_keyframes: int, video_duration: float, metadata_context: str = "") -> str:
@@ -593,105 +626,20 @@ def get_synthesis_prompt(num_keyframes: int, video_duration: float, metadata_con
     print(f"Final decision: {num_captions} captions for {video_duration:.1f}s video ({num_captions/video_duration:.1f} captions/second)")
     print("================================\n")
 
-    # Build the prompt with optional metadata context
+    # Build the metadata context if provided
     metadata_section = ""
     if metadata_context:
-        metadata_section = f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions, with the following important context about the video's origin and purpose:
+        metadata_template = load_metadata_context()
+        metadata_section = metadata_template({
+            "metadata_text": metadata_context
+        })
 
-{metadata_context}
-
-This metadata should inform your understanding of:
-- The video's intended purpose and audience
-- Appropriate style and tone for descriptions
-- Professional vs. amateur context
-- Genre-specific considerations
-"""
-    else:
-        metadata_section = "You are tasked with summarizing and captioning a video based on its transcript and frame descriptions."
-    
-    return f"""{metadata_section}
-
-You MUST follow the exact format specified below.
-
-Output Format:
-1. A summary section wrapped in <summary></summary> tags. The summary MUST start with "This video presents" to maintain consistent style. 
-  - This video summary never refers to frames as "stills" or "images" - they are frames from a continuous sequence.
-2. A captions section wrapped in <captions></captions> tags
-3. Exactly {num_captions} individual captions, each wrapped in <caption></caption> tags
-4. Each caption MUST start with a timestamp in square brackets, e.g. [2.5]
-
-Example format:
-<summary>
-This video presents a [the high level action or narrative that takes place over the frames] in a [location], where [action/assumptions]...
-</summary>
-
-<captions>
-<caption>[0.0] A teacher stands at the front of the classroom...</caption>
-<caption>[3.2] Students raise their hands to answer...</caption>
-...additional captions...
-</captions>
-
-IMPORTANT NOTES ON HANDLING TRANSCRIPT AND DESCRIPTIONS:
-1. The transcript provides helpful context but should not be directly quoted in captions
-2. Focus captions on describing visual elements and actions:
-   - What is happening in the scene
-   - Physical movements and gestures
-   - Changes in environment or setting
-   - Observable facial expressions and body language
-
-Frame Description Guidelines:
-1. Frame descriptions may vary in detail and consistency between frames
-2. Be cautious with frame descriptions that make assumptions about:
-   - Who is speaking or performing actions
-   - Relationships between people
-   - Roles or identities of individuals
-   - Continuity between frames
-3. When synthesizing descriptions:
-   - Default to neutral terms like "a person", "someone", or "the speaker"
-   - Only attribute actions/speech if explicitly clear from transcript
-   - Focus on clearly visible elements rather than interpretations
-   - Use passive voice when action source is ambiguous
-   - Cross-reference transcript before assigning names/identities
-4. If frame descriptions conflict or make assumptions:
-   - Favor the most conservative interpretation
-   - Omit speculative details
-   - Focus on concrete visual elements
-   - Maintain consistent neutral language
-5. Remember that gaps may exist between frames, so avoid assuming continuity.
-
-Requirements for Summary:
-1. IMPORTANT: Always start with "This video presents" to maintain consistent style
-2. Provide a clear overview of this video's main content and purpose
-3. Include key events and settings without attributing actions to specific people
-4. Integrate both visual and audio information while avoiding assumptions
-5. Keep it concise (3-5 sentences)
-6. Use transcript information to establish this video's context and purpose
-7. Cross-reference transcript for useful context and understanding of emotions associated with this video
-8. Focus on clearly visible elements rather than interpretations
-
-Requirements for Captions:
-1. Generate exactly {num_captions} captions
-2. Each caption MUST:
-   - Start with a timestamp in [X.X] format
-   - Use the EARLIEST timestamp where a scene or action begins
-   - Be 20-50 words long
-   - Focus on observable events and context
-   - Avoid attributing speech or actions unless explicitly clear
-3. Timestamps should be reasonably spaced throughout this video
-4. Focus on what is definitively shown or heard, not assumptions
-5. IMPORTANT: When multiple frames describe the same scene or action, use the EARLIEST timestamp
-6. Default to neutral terms like "a person" or "someone" when identities are unclear
-7. Use passive voice when action source is ambiguous
-8. Describe only what is visually observable and keep descriptions objective
-
-Input sections:
-<transcript>
-Timestamped transcript of this video
-</transcript>
-
-<frame_descriptions>
-Timestamped descriptions of key frames
-</frame_descriptions>"""
+    # Pass variables to the base synthesis prompt
+    base_prompt = load_synthesis_base()
+    return base_prompt({
+        "metadata_section": metadata_section,
+        "num_captions": num_captions
+    })
 
 def chunk_video_data(transcript: list, descriptions: list, chunk_duration: int = 60) -> list:
     """Split video data into chunks for processing longer videos."""
@@ -748,6 +696,14 @@ def chunk_video_data(transcript: list, descriptions: list, chunk_duration: int =
     
     print(f"\nFinal chunks: {len(chunks)}")
     print("=========================\n")
+    
+    # Pass variables to the chunk synthesis prompt
+    chunk_prompt = load_synthesis_chunk()
+    prompt_content = chunk_prompt({
+        "chunk_summaries": summaries,
+        "transcript": transcript_text
+    })
+    
     return chunks
 
 def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, use_local_llm=False, video_path: str = None):
@@ -868,27 +824,7 @@ def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, u
 
         # Make a final pass to synthesize all summaries into one coherent summary
         print("\nSynthesizing final summary...")
-        final_summary_prompt = """You are tasked with synthesizing multiple summaries and transcript segments from different parts of a single video into one coherent, comprehensive summary of the entire video.
-        The frame and scene summaries, along with transcript segments, are presented in chronological order. This video does not contain photos, any mentions of photos are incorrect and hallucinations.
-        
-        Output a single overall summary of all the frames, scenes, and dialogue that:
-        1. Always starts with "This video presents" to maintain consistent style.
-        2. Captures the main narrative arc, inferring the most likely high level overview and theme with the given information, along with emotions and feelings.
-        3. Maintains a clear and concise flow
-        4. Is roughly the same length as one of the input summaries
-        5. Ends immediately after the summary (no extra text)
-        6. IMPORTANT: Never refers to frames as "stills" or "images" - they are frames from a continuous sequence
-        7. You must focus on observable events and context without making assumptions about who is doing what
-        8. You must use neutral language and avoids attributing actions unless explicitly clear
-        
-        Input Format:
-        <chunk_summaries>
-        [Chronological summaries of segments]
-        </chunk_summaries>
-
-        <transcript>
-        [Chronological transcript segments]
-        </transcript>"""
+        final_summary_prompt = load_synthesis_chunk()
         
         chunk_summaries_content = "\n\n".join([f"Chunk {i+1}:\n{summary}" for i, summary in enumerate(all_summaries)])
         # Format transcript for final summary
@@ -1010,6 +946,16 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
     """Helper function to get LLM completion with error handling."""
     print("\n=== Starting LLM Completion ===")
     print(f"Using local LLM: {use_local_llm}")
+    
+    print("\nInput Prompt:")
+    print("=" * 80)
+    print(prompt)
+    print("=" * 80)
+    
+    print("\nInput Content:")
+    print("=" * 80)
+    print(content if content else "(No additional content)")
+    print("=" * 80)
     
     try:
         if use_local_llm:
@@ -2043,52 +1989,12 @@ def recontextualize_summary(summary: str, metadata_context: str, use_local_llm: 
     print("\nMetadata Context:", metadata_context)
     print(f"Using local LLM: {use_local_llm}")
     
-    recontextualize_prompt = """You are analyzing a video summary that needs to be enriched with metadata context.
-
-Given the video's metadata and initial summary, provide a more complete understanding that incorporates the video's origin and purpose.
-
-Guidelines for Recontextualization:
-1. Consider the metadata FIRST - it provides crucial context about the video's origin and purpose, but never mention the metadata in your summary (unless it is a title or description of the video).
-2. Use the video's title, creator, and other metadata to properly frame the context (without mentioning the metadata), but IGNORE:
-   - Software/tool attributions (e.g. "Created with Clipchamp", "Made in Adobe", etc.)
-   - Watermarks or branding from editing tools
-   - Generic platform metadata (e.g. "Uploaded to YouTube")
-   - Encoding related metadata (e.g. "Encoded with x264", "Encoded with x265", etc.)
-   - Video resolution (e.g. "1080p", "4K", etc.)
-   - Frame rate (e.g. "30fps", "60fps", etc.)
-   - Audio codec (e.g. "AAC", "MP3", etc.)
-   - Video codec (e.g. "H.264", "H.265", etc.)
-   - Video bit rate (e.g. "1000kbps", "4000kbps", etc.)
-   - Audio bit rate (e.g. "128kbps", "320kbps", etc.)
-3. Pay special attention to:
-   - The video's intended purpose (based on meaningful metadata, but without mentioning the metadata)
-   - Professional vs. amateur content (you don't have to explicitly mention this)
-   - Genre and style implications
-4. Maintain objectivity while acknowledging the full context
-5. Don't speculate too much beyond what's supported by meaningful metadata
-6. Keep roughly the same length and style, 2-4 sentences maximum
-7. Your output must include <recontextualized_summary> open tags and </recontextualized_summary> close tags, with the summary content between them. 
-8. Don't be too specific or verbose in your summary, keep it general and concise.
-
-Output Format:
-<recontextualized_summary>
-A well-written, informed, recontextualized summary, that utilizes the title and description metadata if it is relevant. Must start with "This video presents"
-</recontextualized_summary>
-
-Input:
-<metadata>
-{metadata}
-</metadata>
-
-<initial_summary>
-{summary}
-</initial_summary>"""
-
-    # Create the prompt with context
-    prompt_content = recontextualize_prompt.format(
-        metadata=metadata_context,
-        summary=summary
-    )
+    # Pass variables to the recontextualize prompt
+    recontextualize_prompt = load_synthesis_recontextualize()
+    prompt_content = recontextualize_prompt({
+        "metadata_text": metadata_context,  # Changed from metadata to metadata_text
+        "initial_summary": summary  # Changed from summary to initial_summary
+    })
     
     print("\nFull Prompt for Recontextualization:")
     print("=" * 80)

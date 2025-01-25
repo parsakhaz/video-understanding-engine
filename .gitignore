@@ -1,4 +1,7 @@
-# Byte-compiled / optimized / DLL files
+# Old prompt file
+prompts/moondream_prompt.md
+
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -174,3 +177,15 @@ cython_debug/
 logs/
 embedding_cache/
 frame_analysis_plots/
+
+# Virtual environments
+venv/
+env/
+.env/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment variables
+.env
