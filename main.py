@@ -396,7 +396,8 @@ def get_frame_count(video_path):
     print(f"Total frames: {frame_count}")
     return frame_count
 
-def save_output(video_path, frame_count, transcript, descriptions, summary, total_run_time, synthesis_output=None, synthesis_captions=None):
+def save_output(video_path, frame_count, transcript, descriptions, summary, total_run_time, synthesis_output=None, synthesis_captions=None, use_local_llm=False):
+    """Save processing output to a JSON file."""
     os.makedirs('logs', exist_ok=True)
     timestamp = datetime.now().isoformat().replace(':', '-')
     video_name = os.path.splitext(os.path.basename(video_path))[0]
@@ -535,7 +536,7 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
             "prompts": prompts_info,
             "whisper_model": "large-v3-turbo",
             "clip_model": "ViT-SO400M-14-SigLIP-384",
-            "synthesis_model": "Meta-Llama-3.1-8B-Instruct" if os.environ.get("USE_LOCAL_LLM") else "gpt-4o"
+            "synthesis_model": "Meta-Llama-3.1-8B-Instruct" if use_local_llm else "gpt-4o"
         },
         "processing_stages": {
             "frame_selection": {
@@ -1811,7 +1812,8 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
         summary, 
         total_run_time,
         synthesis_output,
-        synthesis_captions
+        synthesis_captions,
+        use_local_llm  # Add use_local_llm parameter
     )
 
     # Prepare frames with captions for gallery display
