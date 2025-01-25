@@ -1,289 +1,146 @@
 #!/usr/bin/env python3
-import argparse
-import cv2
-import warnings
+import argparse, cv2, warnings, os, time, json, re, subprocess
 from PIL import Image
 import torch
-import os
 from tqdm import tqdm
 import numpy as np
-import json
 from datetime import datetime
 from openai import OpenAI
 from dotenv import load_dotenv
-import time
 from frame_selection import process_video
 import gradio as gr
-import subprocess
-import re
 from difflib import SequenceMatcher
 from prompts import get_frame_description_prompt, get_recontextualization_prompt, get_final_summary_prompt
 import video_utils
-from config import (
-    VIDEO_SETTINGS,
-    FRAME_SELECTION,
-    MODEL_SETTINGS,
-    DISPLAY,
-    RETRY,
-    CAPTION,
-    SIMILARITY
-)
+from config import VIDEO_SETTINGS, FRAME_SELECTION, MODEL_SETTINGS, DISPLAY, RETRY, CAPTION, SIMILARITY
 from model_loader import model_context
 
-def similar(a, b, threshold=SIMILARITY['THRESHOLD']):
-    """Return True if strings are similar above threshold."""
-    return SequenceMatcher(None, a, b).ratio() > threshold
+def similar(a, b, threshold=SIMILARITY['THRESHOLD']): return SequenceMatcher(None, a, b).ratio() > threshold
 
 def clean_transcript(segments):
-    """Clean up transcript by removing duplicates and background noise."""
-    noise_phrases = SIMILARITY['NOISE_PHRASES']
-    boilerplate_phrases = SIMILARITY['BOILERPLATE_PHRASES']
-    
-    filtered_segments = []
-    for segment in segments:
-        text = segment["text"].strip().lower()
-        
-        if any(phrase in text.lower() for phrase in noise_phrases):
-            continue
-            
-        boilerplate_count = sum(1 for phrase in boilerplate_phrases if phrase in text.lower())
-        if boilerplate_count >= 2:
-            continue
-            
-        filtered_segments.append(segment)
-    
+    noise_phrases, boilerplate_phrases = SIMILARITY['NOISE_PHRASES'], SIMILARITY['BOILERPLATE_PHRASES']
+    filtered_segments = [segment for segment in segments if not any(phrase in segment["text"].strip().lower() for phrase in noise_phrases) and sum(1 for phrase in boilerplate_phrases if phrase in segment["text"].strip().lower()) < 2]
     cleaned_segments = []
     for i, current in enumerate(filtered_segments):
-        if i > 0 and similar(current["text"], filtered_segments[i-1]["text"]):
-            continue
-            
+        if i > 0 and similar(current["text"], filtered_segments[i-1]["text"]): continue
         next_segments = filtered_segments[i+1:i+4]
-        if any(similar(current["text"], next_seg["text"]) for next_seg in next_segments):
-            continue
-            
+        if any(similar(current["text"], next_seg["text"]) for next_seg in next_segments): continue
         cleaned_segments.append(current)
-    
-    return cleaned_segments if cleaned_segments else [{
-        "start": 0,
-        "end": 0,
-        "text": ""
-    }]
+    return cleaned_segments if cleaned_segments else [{"start": 0, "end": 0, "text": ""}]
 
-def get_video_duration(video_path):
-    """Get video duration using ffprobe."""
-    return video_utils.get_video_duration(video_path)
-
-def extract_audio(video_path):
-    """Extract audio from video to MP3."""
-    return video_utils.extract_audio(video_path)
+def get_video_duration(video_path): return video_utils.get_video_duration(video_path)
+def extract_audio(video_path): return video_utils.extract_audio(video_path)
 
 def process_transcript(segments):
-    """Convert Whisper segments to our transcript format."""
     processed_transcript = []
-    
     for segment in segments:
-        start = segment.get("start")
-        end = segment.get("end")
-        text = segment.get("text", "").strip()
-        
-        if start is None or end is None or not text:
-            continue
-            
-        processed_transcript.append({
-            "start": start,
-            "end": end,
-            "text": text
-        })
-    
+        start, end, text = segment.get("start"), segment.get("end"), segment.get("text", "").strip()
+        if start is None or end is None or not text: continue
+        processed_transcript.append({"start": start, "end": end, "text": text})
     return processed_transcript
 
-# Function to transcribe audio from a video file using Whisper model
 def transcribe_video(video_path):
     duration = get_video_duration(video_path)
-    if duration is None:
-        return [{
-            "start": 0,
-            "end": 0,
-            "text": ""
-        }]
-
+    if duration is None: return [{"start": 0, "end": 0, "text": ""}]
     has_audio = False
     try:
-        cmd = [
-            'ffprobe', 
-            '-i', video_path,
-            '-show_streams', 
-            '-select_streams', 'a', 
-            '-loglevel', 'error'
-        ]
+        cmd = ['ffprobe', '-i', video_path, '-show_streams', '-select_streams', 'a', '-loglevel', 'error']
         result = subprocess.run(cmd, capture_output=True, text=True)
         has_audio = len(result.stdout.strip()) > 0
-    except subprocess.CalledProcessError:
-        pass
-    if not has_audio:
-        return [{
-            "start": 0,
-            "end": 0,
-            "text": ""
-        }]
-
+    except subprocess.CalledProcessError: pass
+    if not has_audio: return [{"start": 0, "end": 0, "text": ""}]
     audio_path = extract_audio(video_path)
-    if not audio_path:
-        return [{
-            "start": 0,
-            "end": 0,
-            "text": ""
-        }]
-    
+    if not audio_path: return [{"start": 0, "end": 0, "text": ""}]
     try:
         with model_context("whisper") as model:
-            if model is None:
-                return [{
-                    "start": 0,
-                    "end": 0,
-                    "text": ""
-                }]
-                
+            if model is None: return [{"start": 0, "end": 0, "text": ""}]
             result = model.transcribe(audio_path)
             timestamp = int(time.time())
             raw_output_path = os.path.join('outputs', f'whisper_raw_{timestamp}.txt')
-            
             processed_transcript = process_transcript(result["segments"])
-            
             return clean_transcript(processed_transcript)
-            
-    except Exception as e:
-        return [{
-            "start": 0,
-            "end": 0,
-            "text": ""
-        }]
+    except Exception as e: return [{"start": 0, "end": 0, "text": ""}]
     finally:
         try:
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
-        except Exception:
-            pass
+            if os.path.exists(audio_path): os.remove(audio_path)
+        except Exception: pass
 
-# Function to describe frames using a Vision-Language Model
 def describe_frames(video_path, frame_numbers):
     with model_context("moondream") as model_tuple:
-        if model_tuple is None:
-            return []
-            
+        if model_tuple is None: return []
         model, tokenizer = model_tuple
         prompt = get_frame_description_prompt()
-
         props = video_utils.get_video_properties(video_path)
         fps = props['fps']
         frames = []
-
         video = cv2.VideoCapture(video_path)
         for frame_number in frame_numbers:
             video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
             success, frame = video.read()
-            if success:
-                timestamp = frame_number / fps
-                frames.append((frame_number, frame, timestamp))
-
+            if success: frames.append((frame_number, frame, frame_number / fps))
         video.release()
-
         batch_size = FRAME_SELECTION['BATCH_SIZE']
         results = []
-
         for i in tqdm(range(0, len(frames), batch_size), desc="Processing batches"):
             batch_frames = frames[i:i+batch_size]
             batch_images = [Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)) for _, frame, _ in batch_frames]
             batch_prompts = [prompt] * len(batch_images)
-
-            batch_answers = model.batch_answer(
-                images=batch_images,
-                prompts=batch_prompts,
-                tokenizer=tokenizer,
-            )
-
+            batch_answers = model.batch_answer(images=batch_images, prompts=batch_prompts, tokenizer=tokenizer)
             for (frame_number, _, timestamp), answer in zip(batch_frames, batch_answers):
                 results.append((frame_number, timestamp, answer))
-
         return results
 
 def display_described_frames(video_path, descriptions):
     video = cv2.VideoCapture(video_path)
     current_index = 0
-
     def add_caption_to_frame(frame, caption):
         height, width = frame.shape[:2]
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.7
-        font_thickness = 1
-        line_spacing = 10
-        margin = 10
-
+        font_scale, font_thickness, line_spacing, margin = 0.7, 1, 10, 10
         words = caption.split()
-        lines = []
-        current_line = []
-
+        lines, current_line = [], []
         for word in words:
             test_line = ' '.join(current_line + [word])
             (text_width, _), _ = cv2.getTextSize(test_line, font, font_scale, font_thickness)
-
-            if text_width <= width - 2 * margin:
-                current_line.append(word)
+            if text_width <= width - 2 * margin: current_line.append(word)
             else:
                 lines.append(' '.join(current_line))
                 current_line = [word]
-
-        if current_line:
-            lines.append(' '.join(current_line))
-
+        if current_line: lines.append(' '.join(current_line))
         (_, text_height), _ = cv2.getTextSize('Tg', font, font_scale, font_thickness)
         total_height = (text_height + line_spacing) * len(lines) + 2 * margin
-
         caption_image = np.zeros((total_height, width, 3), dtype=np.uint8)
-
         y = margin + text_height
         for line in lines:
             cv2.putText(caption_image, line, (margin, y), font, font_scale, (255, 255, 255), font_thickness)
             y += text_height + line_spacing
-
         return np.vstack((caption_image, frame))
-
     try:
         while True:
             frame_number, timestamp, description = descriptions[current_index]
             video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
             success, frame = video.read()
-            if not success:
-                break
-
+            if not success: break
             max_height = 800
             height, width = frame.shape[:2]
             if height > max_height:
                 ratio = max_height / height
                 frame = cv2.resize(frame, (int(width * ratio), max_height))
-
             frame_with_caption = add_caption_to_frame(frame, f"[{timestamp:.2f}s] Frame {frame_number}: {description}")
-
             cv2.imshow('Video Frames', frame_with_caption)
             cv2.setWindowTitle('Video Frames', f"Frame {frame_number}")
-
             key = cv2.waitKey(100) & 0xFF
-            if key == ord('q'):
-                break
-            elif key in (83, 32):
-                current_index = min(current_index + 1, len(descriptions) - 1)
-            elif key == 81:
-                current_index = max(current_index - 1, 0)
-    except KeyboardInterrupt:
-        pass
+            if key == ord('q'): break
+            elif key in (83, 32): current_index = min(current_index + 1, len(descriptions) - 1)
+            elif key == 81: current_index = max(current_index - 1, 0)
+    except KeyboardInterrupt: pass
     finally:
         video.release()
         cv2.destroyAllWindows()
 
 def get_frame_count(video_path):
     video = cv2.VideoCapture(video_path)
-    if not video.isOpened():
-        return 0
+    if not video.isOpened(): return 0
     frame_count = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
     video.release()
     return frame_count
@@ -293,24 +150,11 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
     timestamp = datetime.now().isoformat().replace(':', '-')
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     filename = f"logs/{timestamp}_{video_name}.json"
-
     metadata, metadata_context = video_utils.get_video_metadata(video_path)
-
     props = video_utils.get_video_properties(video_path)
-    fps = props['fps']
-    width = props['frame_width']
-    height = props['frame_height']
+    fps, width, height = props['fps'], props['frame_width'], props['frame_height']
     video_duration = frame_count / fps if fps else None
-
-    if video_duration < VIDEO_SETTINGS['MIN_VIDEO_DURATION']:
-        video_type = "Short (<30s)"
-    elif video_duration < VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION']:
-        video_type = "Medium (30-90s)"
-    elif video_duration < VIDEO_SETTINGS['LONG_VIDEO_DURATION']:
-        video_type = "Medium-long (90-150s)"
-    else:
-        video_type = "Long (>150s)"
-
+    video_type = "Short (<30s)" if video_duration < VIDEO_SETTINGS['MIN_VIDEO_DURATION'] else "Medium (30-90s)" if video_duration < VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION'] else "Medium-long (90-150s)" if video_duration < VIDEO_SETTINGS['LONG_VIDEO_DURATION'] else "Long (>150s)"
     if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION']:
         num_captions = max(CAPTION['LONG_VIDEO']['MIN_CAPTIONS'], frame_count // 2)
         caption_calc = f"max({CAPTION['LONG_VIDEO']['MIN_CAPTIONS']}, {frame_count} // 2)"
@@ -322,23 +166,16 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
     else:
         if video_duration < VIDEO_SETTINGS['MIN_VIDEO_DURATION']:
             target_captions = int(video_duration / CAPTION['SHORT_VIDEO']['INTERVAL'])
-            num_captions = min(CAPTION['SHORT_VIDEO']['MAX_CAPTIONS'], 
-                             max(CAPTION['SHORT_VIDEO']['MIN_CAPTIONS'], target_captions))
+            num_captions = min(CAPTION['SHORT_VIDEO']['MAX_CAPTIONS'], max(CAPTION['SHORT_VIDEO']['MIN_CAPTIONS'], target_captions))
             caption_calc = f"min({CAPTION['SHORT_VIDEO']['MAX_CAPTIONS']}, max({CAPTION['SHORT_VIDEO']['MIN_CAPTIONS']}, {target_captions}))"
         else:
-            caption_interval = (CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL'] + 
-                              (video_duration - VIDEO_SETTINGS['MIN_VIDEO_DURATION']) * 
-                              (CAPTION['MEDIUM_VIDEO']['MAX_INTERVAL'] - CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL']) / 
-                              (VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION'] - VIDEO_SETTINGS['MIN_VIDEO_DURATION']))
+            caption_interval = (CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL'] + (video_duration - VIDEO_SETTINGS['MIN_VIDEO_DURATION']) * (CAPTION['MEDIUM_VIDEO']['MAX_INTERVAL'] - CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL']) / (VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION'] - VIDEO_SETTINGS['MIN_VIDEO_DURATION']))
             target_captions = int(video_duration / caption_interval)
             max_captions = min(int(video_duration / 4), frame_count // 3)
             num_captions = min(target_captions, max_captions)
             num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
             caption_calc = f"min(max({CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS']}, {target_captions}), {max_captions})"
-
-    from prompts import get_frame_description_prompt
     frame_description_prompt = get_frame_description_prompt()
-
     gpu_memory = {}
     if torch.cuda.is_available():
         try:
@@ -1094,7 +931,8 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
     # Validate synthesis captions if requested
     if use_synthesis_captions:
         if not synthesis_captions:
-            use_synthesis_captions = False
+            use_synt
+            hesis_captions = False
     
     # Create output directory if needed
     if output_path is None:
