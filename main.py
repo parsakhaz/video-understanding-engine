@@ -19,12 +19,11 @@ def similar(a, b, threshold=SIMILARITY['THRESHOLD']): return SequenceMatcher(Non
 
 def clean_transcript(segments):
     noise_phrases, boilerplate_phrases = SIMILARITY['NOISE_PHRASES'], SIMILARITY['BOILERPLATE_PHRASES']
-    filtered_segments = [segment for segment in segments if not any(phrase in segment["text"].strip().lower() for phrase in noise_phrases) and sum(1 for phrase in boilerplate_phrases if phrase in segment["text"].strip().lower()) < 2]
+    filtered_segments = [s for s in segments if not any(p in s["text"].strip().lower() for p in noise_phrases) and sum(1 for p in boilerplate_phrases if p in s["text"].strip().lower()) < 2]
     cleaned_segments = []
     for i, current in enumerate(filtered_segments):
         if i > 0 and similar(current["text"], filtered_segments[i-1]["text"]): continue
-        next_segments = filtered_segments[i+1:i+4]
-        if any(similar(current["text"], next_seg["text"]) for next_seg in next_segments): continue
+        if any(similar(current["text"], next_seg["text"]) for next_seg in filtered_segments[i+1:i+4]): continue
         cleaned_segments.append(current)
     return cleaned_segments if cleaned_segments else [{"start": 0, "end": 0, "text": ""}]
 
@@ -32,22 +31,13 @@ def get_video_duration(video_path): return video_utils.get_video_duration(video_
 def extract_audio(video_path): return video_utils.extract_audio(video_path)
 
 def process_transcript(segments):
-    processed_transcript = []
-    for segment in segments:
-        start, end, text = segment.get("start"), segment.get("end"), segment.get("text", "").strip()
-        if start is None or end is None or not text: continue
-        processed_transcript.append({"start": start, "end": end, "text": text})
-    return processed_transcript
+    return [{"start": s.get("start"), "end": s.get("end"), "text": s.get("text", "").strip()} 
+            for s in segments if s.get("start") is not None and s.get("end") is not None and s.get("text", "").strip()]
 
 def transcribe_video(video_path):
     duration = get_video_duration(video_path)
     if duration is None: return [{"start": 0, "end": 0, "text": ""}]
-    has_audio = False
-    try:
-        cmd = ['ffprobe', '-i', video_path, '-show_streams', '-select_streams', 'a', '-loglevel', 'error']
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        has_audio = len(result.stdout.strip()) > 0
-    except subprocess.CalledProcessError: pass
+    has_audio = len(subprocess.run(['ffprobe', '-i', video_path, '-show_streams', '-select_streams', 'a', '-loglevel', 'error'], capture_output=True, text=True).stdout.strip()) > 0
     if not has_audio: return [{"start": 0, "end": 0, "text": ""}]
     audio_path = extract_audio(video_path)
     if not audio_path: return [{"start": 0, "end": 0, "text": ""}]
@@ -55,15 +45,11 @@ def transcribe_video(video_path):
         with model_context("whisper") as model:
             if model is None: return [{"start": 0, "end": 0, "text": ""}]
             result = model.transcribe(audio_path)
-            timestamp = int(time.time())
-            raw_output_path = os.path.join('outputs', f'whisper_raw_{timestamp}.txt')
             processed_transcript = process_transcript(result["segments"])
             return clean_transcript(processed_transcript)
-    except Exception as e: return [{"start": 0, "end": 0, "text": ""}]
+    except Exception: return [{"start": 0, "end": 0, "text": ""}]
     finally:
-        try:
-            if os.path.exists(audio_path): os.remove(audio_path)
-        except Exception: pass
+        if os.path.exists(audio_path): os.remove(audio_path)
 
 def describe_frames(video_path, frame_numbers):
     with model_context("moondream") as model_tuple:
@@ -79,15 +65,12 @@ def describe_frames(video_path, frame_numbers):
             success, frame = video.read()
             if success: frames.append((frame_number, frame, frame_number / fps))
         video.release()
-        batch_size = FRAME_SELECTION['BATCH_SIZE']
         results = []
-        for i in tqdm(range(0, len(frames), batch_size), desc="Processing batches"):
-            batch_frames = frames[i:i+batch_size]
+        for i in tqdm(range(0, len(frames), FRAME_SELECTION['BATCH_SIZE']), desc="Processing batches"):
+            batch_frames = frames[i:i+FRAME_SELECTION['BATCH_SIZE']]
             batch_images = [Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)) for _, frame, _ in batch_frames]
-            batch_prompts = [prompt] * len(batch_images)
-            batch_answers = model.batch_answer(images=batch_images, prompts=batch_prompts, tokenizer=tokenizer)
-            for (frame_number, _, timestamp), answer in zip(batch_frames, batch_answers):
-                results.append((frame_number, timestamp, answer))
+            batch_answers = model.batch_answer(images=batch_images, prompts=[prompt] * len(batch_images), tokenizer=tokenizer)
+            results.extend((frame_number, timestamp, answer) for (frame_number, _, timestamp), answer in zip(batch_frames, batch_answers))
         return results
 
 def display_described_frames(video_path, descriptions):
@@ -97,17 +80,16 @@ def display_described_frames(video_path, descriptions):
         height, width = frame.shape[:2]
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale, font_thickness, line_spacing, margin = 0.7, 1, 10, 10
-        words = caption.split()
         lines, current_line = [], []
-        for word in words:
+        for word in caption.split():
             test_line = ' '.join(current_line + [word])
-            (text_width, _), _ = cv2.getTextSize(test_line, font, font_scale, font_thickness)
-            if text_width <= width - 2 * margin: current_line.append(word)
+            if cv2.getTextSize(test_line, font, font_scale, font_thickness)[0][0] <= width - 2 * margin: 
+                current_line.append(word)
             else:
                 lines.append(' '.join(current_line))
                 current_line = [word]
         if current_line: lines.append(' '.join(current_line))
-        (_, text_height), _ = cv2.getTextSize('Tg', font, font_scale, font_thickness)
+        text_height = cv2.getTextSize('Tg', font, font_scale, font_thickness)[0][1]
         total_height = (text_height + line_spacing) * len(lines) + 2 * margin
         caption_image = np.zeros((total_height, width, 3), dtype=np.uint8)
         y = margin + text_height
@@ -121,11 +103,7 @@ def display_described_frames(video_path, descriptions):
             video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
             success, frame = video.read()
             if not success: break
-            max_height = 800
-            height, width = frame.shape[:2]
-            if height > max_height:
-                ratio = max_height / height
-                frame = cv2.resize(frame, (int(width * ratio), max_height))
+            if frame.shape[0] > 800: frame = cv2.resize(frame, (int(frame.shape[1] * 800/frame.shape[0]), 800))
             frame_with_caption = add_caption_to_frame(frame, f"[{timestamp:.2f}s] Frame {frame_number}: {description}")
             cv2.imshow('Video Frames', frame_with_caption)
             cv2.setWindowTitle('Video Frames', f"Frame {frame_number}")
@@ -155,6 +133,7 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
     fps, width, height = props['fps'], props['frame_width'], props['frame_height']
     video_duration = frame_count / fps if fps else None
     video_type = "Short (<30s)" if video_duration < VIDEO_SETTINGS['MIN_VIDEO_DURATION'] else "Medium (30-90s)" if video_duration < VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION'] else "Medium-long (90-150s)" if video_duration < VIDEO_SETTINGS['LONG_VIDEO_DURATION'] else "Long (>150s)"
+    
     if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION']:
         num_captions = max(CAPTION['LONG_VIDEO']['MIN_CAPTIONS'], frame_count // 2)
         caption_calc = f"max({CAPTION['LONG_VIDEO']['MIN_CAPTIONS']}, {frame_count} // 2)"
@@ -175,124 +154,29 @@ def save_output(video_path, frame_count, transcript, descriptions, summary, tota
             num_captions = min(target_captions, max_captions)
             num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
             caption_calc = f"min(max({CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS']}, {target_captions}), {max_captions})"
+
     frame_description_prompt = get_frame_description_prompt()
     gpu_memory = {}
     if torch.cuda.is_available():
         try:
-            for i in range(torch.cuda.device_count()):
-                gpu_memory[f"gpu_{i}"] = {
-                    "total": torch.cuda.get_device_properties(i).total_memory,
-                    "allocated": torch.cuda.memory_allocated(i),
-                    "cached": torch.cuda.memory_reserved(i)
-                }
-        except Exception:
-            pass
+            gpu_memory = {f"gpu_{i}": {"total": torch.cuda.get_device_properties(i).total_memory, "allocated": torch.cuda.memory_allocated(i), "cached": torch.cuda.memory_reserved(i)} for i in range(torch.cuda.device_count())}
+        except Exception: pass
 
     cache_path = os.path.join('embedding_cache', f'{video_name}.npy')
     embedding_cache_exists = os.path.exists(cache_path)
 
     output = {
-        "processing_info": {
-            "timestamp": timestamp,
-            "total_run_time": total_run_time,
-            "gpu_memory": gpu_memory,
-            "embedding_cache_status": {
-                "exists": embedding_cache_exists,
-                "path": cache_path if embedding_cache_exists else None
-            }
-        },
-        "configuration": {
-            "video_settings": VIDEO_SETTINGS,
-            "frame_selection": FRAME_SELECTION,
-            "model_settings": MODEL_SETTINGS,
-            "display": DISPLAY,
-            "retry": RETRY,
-            "caption": CAPTION,
-            "similarity": SIMILARITY
-        },
-        "prompts": {
-            "frame_description": frame_description_prompt,
-            "recontextualization": get_recontextualization_prompt(),
-            "final_summary": get_final_summary_prompt(),
-            "synthesis": get_synthesis_prompt(
-                len(descriptions), 
-                video_duration,
-                metadata_context=metadata_context
-            ),
-            "actual_prompts_used": {
-                "frame_description": frame_description_prompt,
-                "synthesis": synthesis_output,
-                "recontextualization": metadata_context if metadata else None,
-                "final_summary": get_final_summary_prompt() if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION'] else None
-            }
-        },
-        "video_metadata": {
-            "path": video_path,
-            "frame_count": frame_count,
-            "duration": video_duration,
-            "fps": fps,
-            "resolution": {
-                "width": width,
-                "height": height
-            },
-            "ffprobe_data": metadata,
-            "video_type": video_type
-        },
-        "caption_analysis": {
-            "video_type": video_type,
-            "target_captions": num_captions,
-            "captions_per_second": num_captions/video_duration if video_duration else None,
-            "calculation_formula": caption_calc,
-            "actual_captions_generated": len(synthesis_captions) if synthesis_captions else 0
-        },
-        "model_info": {
-            "frame_description_prompt": frame_description_prompt,
-            "whisper_model": MODEL_SETTINGS['WHISPER_MODEL'],
-            "clip_model": "ViT-SO400M-14-SigLIP-384",
-            "synthesis_model": MODEL_SETTINGS['LOCAL_LLM_MODEL'] if use_local_llm else MODEL_SETTINGS['GPT_MODEL']
-        },
-        "processing_stages": {
-            "frame_selection": {
-                "method": "clip" if os.environ.get("USE_FRAME_SELECTION") else "regular_sampling",
-                "parameters": {
-                    "novelty_threshold": FRAME_SELECTION['NOVELTY_THRESHOLD'],
-                    "min_skip": FRAME_SELECTION['MIN_SKIP_FRAMES'],
-                    "n_clusters": FRAME_SELECTION['NUM_CLUSTERS']
-                } if os.environ.get("USE_FRAME_SELECTION") else {
-                    "sampling_interval": VIDEO_SETTINGS['FRAME_SAMPLING_INTERVAL']
-                }
-            },
-            "transcription": {
-                "segments": transcript,
-                "total_segments": len(transcript)
-            },
-            "frame_descriptions": [
-                {
-                    "frame_number": frame,
-                    "timestamp": timestamp,
-                    "description": desc
-                } for frame, timestamp, desc in descriptions
-            ],
-            "synthesis": {
-                "raw_output": synthesis_output,
-                "captions": [
-                    {
-                        "timestamp": timestamp,
-                        "text": text
-                    } for timestamp, text in (synthesis_captions or [])
-                ],
-                "summary": summary
-            }
-        },
-        "error_log": {
-            "warnings": [],
-            "errors": [],
-            "retries": {}
-        }
+        "processing_info": {"timestamp": timestamp, "total_run_time": total_run_time, "gpu_memory": gpu_memory, "embedding_cache_status": {"exists": embedding_cache_exists, "path": cache_path if embedding_cache_exists else None}},
+        "configuration": {"video_settings": VIDEO_SETTINGS, "frame_selection": FRAME_SELECTION, "model_settings": MODEL_SETTINGS, "display": DISPLAY, "retry": RETRY, "caption": CAPTION, "similarity": SIMILARITY},
+        "prompts": {"frame_description": frame_description_prompt, "recontextualization": get_recontextualization_prompt(), "final_summary": get_final_summary_prompt(), "synthesis": get_synthesis_prompt(len(descriptions), video_duration, metadata_context=metadata_context), "actual_prompts_used": {"frame_description": frame_description_prompt, "synthesis": synthesis_output, "recontextualization": metadata_context if metadata else None, "final_summary": get_final_summary_prompt() if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION'] else None}},
+        "video_metadata": {"path": video_path, "frame_count": frame_count, "duration": video_duration, "fps": fps, "resolution": {"width": width, "height": height}, "ffprobe_data": metadata, "video_type": video_type},
+        "caption_analysis": {"video_type": video_type, "target_captions": num_captions, "captions_per_second": num_captions/video_duration if video_duration else None, "calculation_formula": caption_calc, "actual_captions_generated": len(synthesis_captions) if synthesis_captions else 0},
+        "model_info": {"frame_description_prompt": frame_description_prompt, "whisper_model": MODEL_SETTINGS['WHISPER_MODEL'], "clip_model": "ViT-SO400M-14-SigLIP-384", "synthesis_model": MODEL_SETTINGS['LOCAL_LLM_MODEL'] if use_local_llm else MODEL_SETTINGS['GPT_MODEL']},
+        "processing_stages": {"frame_selection": {"method": "clip" if os.environ.get("USE_FRAME_SELECTION") else "regular_sampling", "parameters": {"novelty_threshold": FRAME_SELECTION['NOVELTY_THRESHOLD'], "min_skip": FRAME_SELECTION['MIN_SKIP_FRAMES'], "n_clusters": FRAME_SELECTION['NUM_CLUSTERS']} if os.environ.get("USE_FRAME_SELECTION") else {"sampling_interval": VIDEO_SETTINGS['FRAME_SAMPLING_INTERVAL']}}, "transcription": {"segments": transcript, "total_segments": len(transcript)}, "frame_descriptions": [{"frame_number": frame, "timestamp": timestamp, "description": desc} for frame, timestamp, desc in descriptions], "synthesis": {"raw_output": synthesis_output, "captions": [{"timestamp": timestamp, "text": text} for timestamp, text in (synthesis_captions or [])], "summary": summary}},
+        "error_log": {"warnings": [], "errors": [], "retries": {}}
     }
 
-    with open(filename, 'w') as f:
-        json.dump(output, f, indent=2)
+    with open(filename, 'w') as f: json.dump(output, f, indent=2)
 
 def get_synthesis_prompt(num_keyframes: int, video_duration: float, metadata_context: str = "") -> str:
     if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION']:
@@ -304,32 +188,15 @@ def get_synthesis_prompt(num_keyframes: int, video_duration: float, metadata_con
     else:
         if video_duration < VIDEO_SETTINGS['MIN_VIDEO_DURATION']:
             target_captions = int(video_duration / CAPTION['SHORT_VIDEO']['INTERVAL'])
-            num_captions = min(CAPTION['SHORT_VIDEO']['MAX_CAPTIONS'], 
-                             max(CAPTION['SHORT_VIDEO']['MIN_CAPTIONS'], target_captions))
+            num_captions = min(CAPTION['SHORT_VIDEO']['MAX_CAPTIONS'], max(CAPTION['SHORT_VIDEO']['MIN_CAPTIONS'], target_captions))
         else:
-            caption_interval = (CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL'] + 
-                              (video_duration - VIDEO_SETTINGS['MIN_VIDEO_DURATION']) * 
-                              (CAPTION['MEDIUM_VIDEO']['MAX_INTERVAL'] - CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL']) / 
-                              (VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION'] - VIDEO_SETTINGS['MIN_VIDEO_DURATION']))
+            caption_interval = (CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL'] + (video_duration - VIDEO_SETTINGS['MIN_VIDEO_DURATION']) * (CAPTION['MEDIUM_VIDEO']['MAX_INTERVAL'] - CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL']) / (VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION'] - VIDEO_SETTINGS['MIN_VIDEO_DURATION']))
             target_captions = int(video_duration / caption_interval)
             max_captions = min(int(video_duration / 4), num_keyframes // 3)
             num_captions = min(target_captions, max_captions)
             num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
 
-    metadata_section = ""
-    if metadata_context:
-        metadata_section = f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions, with the following important context about the video's origin and purpose:
-
-{metadata_context}
-
-This metadata should inform your understanding of:
-- The video's intended purpose and audience
-- Appropriate style and tone for descriptions
-- Professional vs. amateur context
-- Genre-specific considerations
-"""
-    else:
-        metadata_section = "You are tasked with summarizing and captioning a video based on its transcript and frame descriptions."
+    metadata_section = f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions, with the following important context about the video's origin and purpose:\n\n{metadata_context}\n\nThis metadata should inform your understanding of:\n- The video's intended purpose and audience\n- Appropriate style and tone for descriptions\n- Professional vs. amateur context\n- Genre-specific considerations\n""" if metadata_context else "You are tasked with summarizing and captioning a video based on its transcript and frame descriptions."
     
     return f"""{metadata_section}
 
@@ -416,581 +283,298 @@ Timestamped descriptions of key frames
 </frame_descriptions>"""
 
 def chunk_video_data(transcript: list, descriptions: list, chunk_duration: int = 60) -> list:
-    """Split video data into chunks for processing longer videos."""
     chunks = []
     current_chunk_start = 0
     min_descriptions_per_chunk = 4
     
     while current_chunk_start < descriptions[-1][1]:
         current_chunk_end = current_chunk_start + chunk_duration
+        chunk_descriptions = [desc for desc in descriptions if current_chunk_start <= desc[1] < current_chunk_end]
         
-        chunk_descriptions = [
-            desc for desc in descriptions 
-            if current_chunk_start <= desc[1] < current_chunk_end
-        ]
-        
-        original_end = current_chunk_end
         while len(chunk_descriptions) < min_descriptions_per_chunk and current_chunk_end < descriptions[-1][1]:
             current_chunk_end += 15
-            chunk_descriptions = [
-                desc for desc in descriptions 
-                if current_chunk_start <= desc[1] < current_chunk_end
-            ]
+            chunk_descriptions = [desc for desc in descriptions if current_chunk_start <= desc[1] < current_chunk_end]
         
-        chunk_transcript = [
-            seg for seg in transcript
-            if (seg["start"] >= current_chunk_start and seg["start"] < current_chunk_end) or
-               (seg["end"] > current_chunk_start and seg["end"] <= current_chunk_end)
-        ]
+        chunk_transcript = [seg for seg in transcript if (seg["start"] >= current_chunk_start and seg["start"] < current_chunk_end) or (seg["end"] > current_chunk_start and seg["end"] <= current_chunk_end)]
         
-        if chunk_descriptions:
-            chunks.append((chunk_transcript, chunk_descriptions))
-        
+        if chunk_descriptions: chunks.append((chunk_transcript, chunk_descriptions))
         current_chunk_start = current_chunk_end
     
     return chunks
 
 def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, use_local_llm=False, video_path: str = None):
     load_dotenv()
-
     metadata_context = ""
     if video_path:
-        max_metadata_retries = 3
-        for attempt in range(max_metadata_retries):
+        for attempt in range(3):
             try:
-                cmd = [
-                    'ffprobe',
-                    '-v', 'quiet',
-                    '-print_format', 'json',
-                    '-show_format',
-                    '-show_streams',
-                    video_path
-                ]
-                metadata_json = subprocess.check_output(cmd).decode('utf-8')
+                metadata_json = subprocess.check_output(['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', video_path]).decode('utf-8')
                 metadata = json.loads(metadata_json)
-                
                 format_metadata = metadata.get('format', {}).get('tags', {})
-                title = format_metadata.get('title', '')
-                artist = format_metadata.get('artist', '')
-                duration = float(metadata.get('format', {}).get('duration', 0))
-                
                 metadata_context = "Video Metadata:\n"
-                if title:
-                    metadata_context += f"- Title: {title}\n"
-                if artist:
-                    metadata_context += f"- Creator: {artist}\n"
-                metadata_context += f"- Duration: {duration:.2f} seconds\n"
-                
-                for key, value in format_metadata.items():
-                    if key not in ['title', 'artist'] and value:
-                        metadata_context += f"- {key}: {value}\n"
+                if format_metadata.get('title'): metadata_context += f"- Title: {format_metadata['title']}\n"
+                if format_metadata.get('artist'): metadata_context += f"- Creator: {format_metadata['artist']}\n"
+                metadata_context += f"- Duration: {float(metadata.get('format', {}).get('duration', 0)):.2f} seconds\n"
+                metadata_context += '\n'.join(f"- {k}: {v}" for k, v in format_metadata.items() if k not in ['title', 'artist'] and v)
                 break
-            except Exception as e:
-                if attempt < max_metadata_retries - 1:
-                    time.sleep(2 * (attempt + 1))
-                else:
-                    metadata_context = ""
+            except Exception:
+                if attempt < 2: time.sleep(2 * (attempt + 1))
+                else: metadata_context = ""
 
-    is_long_video = video_duration > 150  # 2.5 minutes threshold
-    
-    initial_synthesis = None
-    initial_captions = None
+    is_long_video = video_duration > 150
+    initial_synthesis = initial_captions = None
     
     if is_long_video:
         chunks = chunk_video_data(transcript, descriptions)
-        all_summaries = []
-        all_captions = []
+        all_summaries, all_captions = [], []
         
-        for i, (chunk_transcript, chunk_descriptions) in enumerate(chunks, 1):
-            synthesis_prompt = get_synthesis_prompt(
-                len(chunk_descriptions), 
-                video_duration,
-                metadata_context  # Pass metadata to each chunk
-            )
-
-            timestamped_transcript = "\n".join([
-                f"[{segment['start']:.2f}s-{segment['end']:.2f}s] {segment['text']}"
-                for segment in chunk_transcript
-            ])
-            frame_descriptions = "\n".join([
-                f"[{timestamp:.2f}s] Frame {frame}: {desc}"
-                for frame, timestamp, desc in chunk_descriptions
-            ])
-            
+        for chunk_transcript, chunk_descriptions in chunks:
+            synthesis_prompt = get_synthesis_prompt(len(chunk_descriptions), video_duration, metadata_context)
+            timestamped_transcript = '\n'.join(f"[{s['start']:.2f}s-{s['end']:.2f}s] {s['text']}" for s in chunk_transcript)
+            frame_descriptions = '\n'.join(f"[{t:.2f}s] Frame {f}: {d}" for f, t, d in chunk_descriptions)
             user_content = f"<transcript>\n{timestamped_transcript}\n</transcript>\n\n<frame_descriptions>\n{frame_descriptions}\n</frame_descriptions>"
             
-            max_retries = 5
-            for attempt in range(max_retries):
-                completion = get_llm_completion(synthesis_prompt, user_content, use_local_llm=use_local_llm)
-                
+            for attempt in range(5):
+                completion = get_llm_completion(synthesis_prompt, user_content, use_local_llm)
                 if completion is None:
-                    if attempt < max_retries - 1:
-                        time.sleep(2 * (attempt + 1))
-                        continue
-                    else:
-                        return None, None
+                    if attempt < 4: time.sleep(2 * (attempt + 1))
+                    continue
                 
                 chunk_summary, chunk_captions = parse_synthesis_output(completion)
-                
                 if chunk_summary and chunk_captions:
                     all_summaries.append(chunk_summary)
                     all_captions.extend(chunk_captions)
                     break
-                else:
-                    if attempt < max_retries - 1:
-                        time.sleep(2 * (attempt + 1))  # Exponential backoff
-                    else:
-                        return None, None
+                elif attempt < 4: time.sleep(2 * (attempt + 1))
 
-        # Make a final pass to synthesize all summaries into one coherent summary
-        from prompts import get_final_summary_prompt
         final_summary_prompt = get_final_summary_prompt()
-
-        chunk_summaries_content = "\n\n".join([f"Chunk {i+1}:\n{summary}" for i, summary in enumerate(all_summaries)])
-        # Format transcript for final summary
-        timestamped_transcript = "\n".join([
-            f"[{segment['start']:.2f}s-{segment['end']:.2f}s] {segment['text']}"
-            for segment in transcript
-        ])
-
+        chunk_summaries_content = '\n\n'.join(f"Chunk {i+1}:\n{s}" for i, s in enumerate(all_summaries))
+        timestamped_transcript = '\n'.join(f"[{s['start']:.2f}s-{s['end']:.2f}s] {s['text']}" for s in transcript)
         final_summary_content = f"<chunk_summaries>\n{chunk_summaries_content}\n</chunk_summaries>\n\n<transcript>\n{timestamped_transcript}\n</transcript>"
 
-        # Get final summary with retries
-        max_retries = 5
-        final_summary = None
-        for attempt in range(max_retries):
-            final_summary = get_llm_completion(final_summary_prompt, final_summary_content, use_local_llm=use_local_llm)
-            if final_summary:
-                break
-            elif attempt < max_retries - 1:
-                time.sleep(2 * (attempt + 1))
+        for attempt in range(5):
+            final_summary = get_llm_completion(final_summary_prompt, final_summary_content, use_local_llm)
+            if final_summary: break
+            elif attempt < 4: time.sleep(2 * (attempt + 1))
         
-        if not final_summary:
-            return None, None
-            
-        # For long videos, validate and retry the final recontextualized synthesis
-        if is_long_video:
-            max_recontextualize_retries = 3
-            for attempt in range(max_recontextualize_retries):
-                # Recontextualize the final summary with metadata
-                if metadata_context:
-                    final_summary = recontextualize_summary(final_summary, metadata_context, use_local_llm)
-                
-                # Create final synthesis format with the new summary
-                initial_synthesis = f"<summary>\n{final_summary}\n</summary>\n\n<captions>\n"
-                for timestamp, text in sorted(all_captions, key=lambda x: x[0]):
-                    initial_synthesis += f"<caption>[{timestamp:.1f}] {text}</caption>\n"
-                initial_synthesis += "</captions>"
+        if not final_summary: return None, None
 
-                # Parse and validate the final output
-                initial_summary, initial_captions = parse_synthesis_output(initial_synthesis)
-                if initial_summary and initial_captions:
-                    break
-                
-                if attempt < max_recontextualize_retries - 1:
-                    time.sleep(2 * (attempt + 1))
-        
-        # Recontextualize the final summary with metadata
         if metadata_context:
             final_summary = recontextualize_summary(final_summary, metadata_context, use_local_llm)
+
+        initial_synthesis = f"<summary>\n{final_summary}\n</summary>\n\n<captions>\n" + '\n'.join(f"<caption>[{t:.1f}] {txt}</caption>" for t, txt in sorted(all_captions, key=lambda x: x[0])) + "\n</captions>"
+        initial_summary, initial_captions = parse_synthesis_output(initial_synthesis)
         
-        # Create final synthesis format with the new summary
-        initial_synthesis = f"<summary>\n{final_summary}\n</summary>\n\n<captions>\n"
-        for timestamp, text in sorted(all_captions, key=lambda x: x[0]):
-            initial_synthesis += f"<caption>[{timestamp:.1f}] {text}</caption>\n"
-        initial_synthesis += "</captions>"
+        if not (initial_summary and initial_captions):
+            for attempt in range(3):
+                if metadata_context:
+                    final_summary = recontextualize_summary(final_summary, metadata_context, use_local_llm)
+                initial_synthesis = f"<summary>\n{final_summary}\n</summary>\n\n<captions>\n" + '\n'.join(f"<caption>[{t:.1f}] {txt}</caption>" for t, txt in sorted(all_captions, key=lambda x: x[0])) + "\n</captions>"
+                initial_summary, initial_captions = parse_synthesis_output(initial_synthesis)
+                if initial_summary and initial_captions: break
+                if attempt < 2: time.sleep(2 * (attempt + 1))
     else:
-        # Original logic for short videos with retries
         synthesis_prompt = get_synthesis_prompt(len(descriptions), video_duration)
-        timestamped_transcript = "\n".join([f"[{segment['start']:.2f}s-{segment['end']:.2f}s] {segment['text']}" for segment in transcript])
-        frame_descriptions = "\n".join([f"[{timestamp:.2f}s] Frame {frame}: {desc}" for frame, timestamp, desc in descriptions])
+        timestamped_transcript = '\n'.join(f"[{s['start']:.2f}s-{s['end']:.2f}s] {s['text']}" for s in transcript)
+        frame_descriptions = '\n'.join(f"[{t:.2f}s] Frame {f}: {d}" for f, t, d in descriptions)
         user_content = f"<transcript>\n{timestamped_transcript}\n</transcript>\n\n<frame_descriptions>\n{frame_descriptions}\n</frame_descriptions>"
         
-        max_retries = 5  # Increased from 3 to 5
-        for attempt in range(max_retries):
-            completion = get_llm_completion(synthesis_prompt, user_content, use_local_llm=use_local_llm)
-            
+        for attempt in range(5):
+            completion = get_llm_completion(synthesis_prompt, user_content, use_local_llm)
             if completion is None:
-                if attempt < max_retries - 1:
-                    time.sleep(2 * (attempt + 1))
-                    continue
-                else:
-                    return None, None
+                if attempt < 4: time.sleep(2 * (attempt + 1))
+                continue
             
             initial_summary, initial_captions = parse_synthesis_output(completion)
-            
             if initial_summary and initial_captions:
                 initial_synthesis = completion
                 break
-            else:
-                if attempt < max_retries - 1:
-                    time.sleep(2 * (attempt + 1))  # Exponential backoff
-                else:
-                    return None, None
+            elif attempt < 4: time.sleep(2 * (attempt + 1))
     
-    # At this point we have initial_synthesis and initial_captions
     if initial_synthesis and initial_captions:
-        # Recontextualize the final summary with metadata
         if metadata_context:
             initial_summary = recontextualize_summary(initial_summary, metadata_context, use_local_llm)
-            # Update the synthesis with the recontextualized summary
-            initial_synthesis = f"<summary>\n{initial_summary}\n</summary>\n\n<captions>\n"
-            for timestamp, text in initial_captions:
-                initial_synthesis += f"<caption>[{timestamp:.1f}] {text}</caption>\n"
-            initial_synthesis += "</captions>"
+            initial_synthesis = f"<summary>\n{initial_summary}\n</summary>\n\n<captions>\n" + '\n'.join(f"<caption>[{t:.1f}] {txt}</caption>" for t, txt in initial_captions) + "\n</captions>"
         return initial_synthesis, initial_captions
 
     return None, None
 
 def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -> str:
-    """Helper function to get LLM completion with error handling."""
     try:
         if use_local_llm:
             with model_context("llama") as pipeline:
-                if pipeline is None:
-                    return None
-                    
+                if pipeline is None: return None
                 try:
-                    # Format messages like in the docs
-                    messages = [
-                        {"role": "system", "content": prompt},
-                        {"role": "user", "content": content},
-                    ]
-                    
-                    outputs = pipeline(
-                        messages,
-                        max_new_tokens=8000,
-                        temperature=MODEL_SETTINGS['TEMPERATURE'],
-                    )
-                    raw_response = outputs[0]["generated_text"]
-                    
-                    # Extract just the assistant's response
-                    try:
-                        # Convert the list object to a string first
-                        raw_response_str = str(raw_response)
-                        
-                        # Try different quote styles and formats
-                        patterns = [
-                            "'role': 'assistant', 'content': '",
-                            '"role": "assistant", "content": "',
-                            "'role': 'assistant', 'content': \"",
-                            "role': 'assistant', 'content': '",
-                            "role\": \"assistant\", \"content\": \""
-                        ]
-                        
-                        content = None
-                        for pattern in patterns:
-                            assistant_start = raw_response_str.find(pattern)
-                            if assistant_start != -1:
-                                content_start = assistant_start + len(pattern)
-                                # Try different ending patterns
-                                for end_pattern in ["'}", '"}', "\"}", "'}]", '"}]']:
-                                    content_end = raw_response_str.find(end_pattern, content_start)
-                                    if content_end != -1:
-                                        content = raw_response_str[content_start:content_end]
-                                        # Unescape the content
-                                        content = content.encode().decode('unicode_escape')
-                                        return content
-                        
-                        # If we get here, try to find XML tags directly
-                        if "<summary>" in raw_response_str and "</summary>" in raw_response_str:
-                            return raw_response_str
-                        
-                        return None
-                    
-                    except Exception as e:
-                        return None
-                        
-                except Exception as e:
+                    outputs = pipeline([{"role": "system", "content": prompt}, {"role": "user", "content": content}], max_new_tokens=8000, temperature=MODEL_SETTINGS['TEMPERATURE'])
+                    raw_response = str(outputs[0]["generated_text"])
+                    for pattern in ["'role': 'assistant', 'content': '", '"role": "assistant", "content": "', "'role': 'assistant', 'content': \"", "role': 'assistant', 'content': '", "role\": \"assistant\", \"content\": \""]:
+                        assistant_start = raw_response.find(pattern)
+                        if assistant_start != -1:
+                            content_start = assistant_start + len(pattern)
+                            for end_pattern in ["'}", '"}', "\"}", "'}]", '"}]']:
+                                content_end = raw_response.find(end_pattern, content_start)
+                                if content_end != -1:
+                                    content = raw_response[content_start:content_end].encode().decode('unicode_escape')
+                                    return content
+                    if "<summary>" in raw_response and "</summary>" in raw_response: return raw_response
                     return None
+                except Exception: return None
         
-        # OpenAI API fallback
         api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            return None
+        if not api_key: return None
 
         for attempt in range(RETRY['MAX_RETRIES']):
             try:
                 client = OpenAI(api_key=api_key)
-                completion = client.chat.completions.create(
-                    model=MODEL_SETTINGS['GPT_MODEL'],
-                    messages=[
-                        {"role": "system", "content": prompt},
-                        {"role": "user", "content": content}
-                    ],
-                    temperature=MODEL_SETTINGS['TEMPERATURE']
-                )
-                response = completion.choices[0].message.content.strip()
-                return response
-            except Exception as e:
-                if attempt == RETRY['MAX_RETRIES'] - 1:  # Last attempt
-                    return None
-                time.sleep(RETRY['INITIAL_DELAY'] * (attempt + 1))
-    except Exception as e:
-        return None
+                completion = client.chat.completions.create(model=MODEL_SETTINGS['GPT_MODEL'], messages=[{"role": "system", "content": prompt}, {"role": "user", "content": content}], temperature=MODEL_SETTINGS['TEMPERATURE'])
+                return completion.choices[0].message.content.strip()
+            except Exception:
+                if attempt < RETRY['MAX_RETRIES'] - 1: time.sleep(RETRY['INITIAL_DELAY'] * (attempt + 1))
+                else: return None
+    except Exception: return None
 
 def parse_synthesis_output(output: str) -> tuple:
     """Parse the synthesis output to extract summary and captions."""
     try:
-        # Extract summary (required)
+        # Extract summary and captions (both required)
         summary_match = re.search(r'<summary>(.*?)</summary>', output, re.DOTALL)
-        if not summary_match:
-            raise ValueError("No summary found in synthesis output")
-        summary = summary_match.group(1).strip()
-        
-        # Extract captions (required)
         captions_match = re.search(r'<captions>(.*?)</captions>', output, re.DOTALL)
-        if not captions_match:
-            raise ValueError("No captions found in synthesis output")
-        
+        if not summary_match or not captions_match:
+            raise ValueError("Missing summary or captions in synthesis output")
+            
+        summary = summary_match.group(1).strip()
         captions_text = captions_match.group(1).strip()
-        # Extract all caption tags from within the captions section
-        caption_matches = re.findall(r'<caption>\[([\d.]+)s?\](.*?)</caption>', captions_text, re.DOTALL)
         
+        # Extract and validate caption timestamps/text
         caption_list = []
-        for timestamp_str, text in caption_matches:
+        for timestamp_str, text in re.findall(r'<caption>\[([\d.]+)s?\](.*?)</caption>', captions_text, re.DOTALL):
             try:
-                timestamp = float(timestamp_str)
                 text = text.strip()
-                if text:  # Only add if we have actual text
-                    caption_list.append((timestamp, text))
-            except ValueError as e:
+                if text:
+                    caption_list.append((float(timestamp_str), text))
+            except ValueError:
                 continue
-        
+                
         if not caption_list:
             raise ValueError("No valid captions found in synthesis output")
             
         return summary, caption_list
-    except (ValueError, AttributeError) as e:
+    except (ValueError, AttributeError):
         return None, None
 
 def create_summary_clip(summary: str, width: int, height: int, fps: int, debug: bool = False, metadata: dict = None) -> str:
     """Create a video clip with centered summary text."""
-    # Calculate duration based on reading speed (400 words/min) * 0% buffer
-    word_count = len(summary.split())
-    base_duration = (word_count / 400) * 60  # Convert to seconds
-    duration = base_duration * 1
+    # Setup video writer
+    duration = (len(summary.split()) / 400) * 60
     total_frames = int(duration * fps)
-    
-    # Create output path
-    os.makedirs('outputs', exist_ok=True)
     temp_summary_path = os.path.join('outputs', f'temp_summary_{int(time.time())}.mp4')
+    os.makedirs('outputs', exist_ok=True)
+    out = cv2.VideoWriter(temp_summary_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
     
-    # Initialize video writer
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(temp_summary_path, fourcc, fps, (width, height))
+    # Configure fonts and text settings
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    attr_font_scale = min(height * 0.02 / 20, 0.6)
+    debug_font_scale = min(height * 0.018 / 20, 0.5) if debug else None
+    font_scale = min(height * 0.03 / 20, 0.8)
+    line_height = max(25, int(height * 0.04))
     
-    # Create black frame
-    frame = np.zeros((height, width, 3), dtype=np.uint8)
-    
-    # Add attribution text - now at bottom middle with adjusted font size
+    # Prepare attribution text
     attribution = "Local Video Understanding Engine - powered by Moondream 2B, CLIP, LLama 3.1 8b Instruct, and Whisper Large"
     if debug:
         attribution = "DEBUG " + attribution
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    # Increased font scale for attribution
-    attr_font_scale = min(height * 0.02 / 20, 0.6)  # Increased from 0.015 to 0.02
     
-    # Calculate text size and position for centering
-    (text_width, text_height), _ = cv2.getTextSize(attribution, font, attr_font_scale, 1)
-    attr_x = (width - text_width) // 2  # Center horizontally
-    attr_y = height - 20  # 20 pixels from bottom
-    
-    # Draw attribution text
-    if debug:
-        # Draw DEBUG in red with monospace font first
-        debug_font = cv2.FONT_HERSHEY_COMPLEX_SMALL  # Using complex small for monospace-like appearance
-        debug_text = "DEBUG"
-        (debug_width, _), _ = cv2.getTextSize(debug_text, debug_font, attr_font_scale, 1)
-        # Draw DEBUG text in red
-        cv2.putText(frame, debug_text, (attr_x, attr_y), debug_font, attr_font_scale, (0, 0, 255), 1, cv2.LINE_AA)
-        # Draw the rest of the attribution after DEBUG
-        rest_text = " " + attribution[6:]  # Skip the "DEBUG " we added earlier
-        cv2.putText(frame, rest_text, (attr_x + debug_width, attr_y), font, attr_font_scale, (255, 255, 255), 1, cv2.LINE_AA)
-    else:
-        cv2.putText(frame, attribution, (attr_x, attr_y), font, attr_font_scale, (255, 255, 255), 1, cv2.LINE_AA)
-    
-    # Add debug metadata if enabled
-    if debug and metadata:
-        # Increased font scale for debug metadata
-        debug_font_scale = min(height * 0.018 / 20, 0.5)  # Increased from 0.015 to 0.018
-        y_pos = 30  # Start position from top
-        x_pos = 20  # Left margin
-        line_spacing = 25  # Space between lines
-        section_spacing = 35  # Space between sections
-        
-        # Format and display metadata by sections
-        for section_name, section_data in metadata.items():
-            # Draw section header
-            cv2.putText(frame, f"{section_name}:", (x_pos, y_pos), font, debug_font_scale * 1.1, (255, 255, 255), 1, cv2.LINE_AA)
-            y_pos += line_spacing
-            
-            # Draw section items
-            for key, value in section_data.items():
-                if isinstance(value, float):
-                    debug_text = f"  {key}: {value:.2f}"
-                else:
-                    debug_text = f"  {key}: {value}"
-                cv2.putText(frame, debug_text, (x_pos, y_pos), font, debug_font_scale, (200, 200, 200), 1, cv2.LINE_AA)
-                y_pos += line_spacing
-            
-            # Add extra space between sections
-            y_pos += section_spacing - line_spacing  # Subtract line_spacing to not add too much space
-    
-    # Prepare text
-    font_scale = min(height * 0.03 / 20, 0.8)  # Reduced from 0.04 to 0.03 and max from 1.0 to 0.8
-    margin = 40
-    max_width = int(width * 0.75)  # Use 80% of frame width
-    
-    # Split text into lines
-    words = summary.split()
+    # Split summary into lines that fit width
     lines = []
     current_line = []
+    max_width = int(width * 0.75)
     
-    for word in words:
+    for word in summary.split():
         test_line = ' '.join(current_line + [word])
-        (text_width, _), _ = cv2.getTextSize(test_line, font, font_scale, 1)
-        
-        if text_width <= max_width:
+        if cv2.getTextSize(test_line, font, font_scale, 1)[0][0] <= max_width:
             current_line.append(word)
         else:
             if current_line:
                 lines.append(' '.join(current_line))
             current_line = [word]
-    
     if current_line:
         lines.append(' '.join(current_line))
-    
-    # Calculate text block height
-    line_height = max(25, int(height * 0.04))
+        
+    # Calculate vertical positioning
     total_height = len(lines) * line_height
-    start_y = (height - total_height) // 2  # Center vertically
+    start_y = (height - total_height) // 2
     
-    # Write frames
+    # Generate frames
     for _ in range(total_frames):
         frame = np.zeros((height, width, 3), dtype=np.uint8)
         
-        # Add attribution text to each frame - at bottom middle
-        (text_width, text_height), _ = cv2.getTextSize(attribution, font, attr_font_scale, 1)
-        attr_x = (width - text_width) // 2  # Center horizontally
-        attr_y = height - 20  # 20 pixels from bottom
+        # Draw attribution
+        (text_width, _), _ = cv2.getTextSize(attribution, font, attr_font_scale, 1)
+        attr_x = (width - text_width) // 2
+        attr_y = height - 20
         
-        # Draw attribution text
         if debug:
-            # Draw DEBUG in red with monospace font first
-            debug_font = cv2.FONT_HERSHEY_COMPLEX_SMALL  # Using complex small for monospace-like appearance
+            debug_font = cv2.FONT_HERSHEY_COMPLEX_SMALL
             debug_text = "DEBUG"
             (debug_width, _), _ = cv2.getTextSize(debug_text, debug_font, attr_font_scale, 1)
-            # Draw DEBUG text in red
             cv2.putText(frame, debug_text, (attr_x, attr_y), debug_font, attr_font_scale, (0, 0, 255), 1, cv2.LINE_AA)
-            # Draw the rest of the attribution after DEBUG
-            rest_text = " " + attribution[6:]  # Skip the "DEBUG " we added earlier
-            cv2.putText(frame, rest_text, (attr_x + debug_width, attr_y), font, attr_font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(frame, " " + attribution[6:], (attr_x + debug_width, attr_y), font, attr_font_scale, (255, 255, 255), 1, cv2.LINE_AA)
         else:
             cv2.putText(frame, attribution, (attr_x, attr_y), font, attr_font_scale, (255, 255, 255), 1, cv2.LINE_AA)
-        
-        # Add debug metadata if enabled
+            
+        # Draw debug metadata
         if debug and metadata:
-            y_pos = 30  # Start position from top
-            x_pos = 20  # Left margin
-            for key, value in metadata.items():
-                if isinstance(value, float):
-                    debug_text = f"{key}: {value:.2f}"
-                else:
-                    debug_text = f"{key}: {value}"
-                cv2.putText(frame, debug_text, (x_pos, y_pos), font, debug_font_scale, (200, 200, 200), 1, cv2.LINE_AA)
-                y_pos += 25  # Space between lines
-        
+            y_pos = 30
+            for section_name, section_data in metadata.items():
+                cv2.putText(frame, f"{section_name}:", (20, y_pos), font, debug_font_scale * 1.1, (255, 255, 255), 1, cv2.LINE_AA)
+                y_pos += 25
+                for key, value in section_data.items():
+                    debug_text = f"  {key}: {value:.2f}" if isinstance(value, float) else f"  {key}: {value}"
+                    cv2.putText(frame, debug_text, (20, y_pos), font, debug_font_scale, (200, 200, 200), 1, cv2.LINE_AA)
+                    y_pos += 25
+                y_pos += 10
+                
+        # Draw summary text
         y = start_y
         for line in lines:
-            # Get text size for centering
-            (text_width, _), _ = cv2.getTextSize(line, font, font_scale, 1)
-            x = (width - text_width) // 2  # Center horizontally
-            
-            cv2.putText(frame,
-                       line,
-                       (x, y),
-                       font,
-                       font_scale,
-                       (255, 255, 255),
-                       1,
-                       cv2.LINE_AA)
+            x = (width - cv2.getTextSize(line, font, font_scale, 1)[0][0]) // 2
+            cv2.putText(frame, line, (x, y), font, font_scale, (255, 255, 255), 1, cv2.LINE_AA)
             y += line_height
-        
+            
         out.write(frame)
-    
+        
     out.release()
     return temp_summary_path, duration
 
 def create_captioned_video(video_path: str, descriptions: list, summary: str, transcript: list, synthesis_captions: list = None, use_synthesis_captions: bool = False, show_transcriptions: bool = False, output_path: str = None, debug: bool = False, debug_metadata: dict = None) -> str:
     """Create a video with persistent captions from keyframe descriptions and transcriptions."""
-    
-    # Check if video has an audio stream using video_utils
     has_audio = video_utils.has_audio_stream(video_path)
-
-    # Validate synthesis captions if requested
-    if use_synthesis_captions:
-        if not synthesis_captions:
-            use_synthesis_captions = False
+    use_synthesis_captions = use_synthesis_captions and synthesis_captions
     
-    # Create output directory if needed
     if output_path is None:
         os.makedirs(VIDEO_SETTINGS['OUTPUT_DIR'], exist_ok=True)
         base_name = os.path.splitext(os.path.basename(video_path))[0]
         temp_output = os.path.join(VIDEO_SETTINGS['OUTPUT_DIR'], f'temp_{base_name}.mp4')
         final_output = os.path.join(VIDEO_SETTINGS['OUTPUT_DIR'], f'captioned_{base_name}.mp4')
     else:
-        temp_output = output_path + '.temp'
-        final_output = output_path
+        temp_output, final_output = output_path + '.temp', output_path
 
-    # Get video properties using video_utils
     props = video_utils.get_video_properties(video_path)
-    fps = props['fps']
-    frame_width = props['frame_width']
-    frame_height = props['frame_height']
-    total_frames = props['total_frames']
+    fps, frame_width, frame_height, total_frames = props['fps'], props['frame_width'], props['frame_height'], props['total_frames']
 
-    # Initialize video capture
     video = cv2.VideoCapture(video_path)
     if not video.isOpened():
         return None
 
-    # Choose which captions to use
     if use_synthesis_captions and synthesis_captions:
-        # Calculate video duration
-        video_duration = total_frames / fps
-        
-        # Convert synthesis captions to frame info format
-        frame_info = []
-        
-        if len(synthesis_captions) > 0:
-            # First pass: Adjust timestamps slightly earlier for better timing
-            adjusted_captions = []
-            for timestamp, text in synthesis_captions:
-                # Adjust timestamp to be slightly earlier, but not before 0
-                adjusted_timestamp = max(0.0, timestamp - CAPTION['TIMESTAMP_OFFSET'])
-                adjusted_captions.append((adjusted_timestamp, text))
-            
-            # Convert to frame info format with adjusted timestamps
-            frame_info = [(int(timestamp * fps), timestamp, text) 
-                         for timestamp, text in adjusted_captions]
-            
-            frame_info.sort(key=lambda x: x[1])  # Sort by timestamp
+        adjusted_captions = [(max(0.0, timestamp - CAPTION['TIMESTAMP_OFFSET']), text) for timestamp, text in synthesis_captions]
+        frame_info = [(int(timestamp * fps), timestamp, text) for timestamp, text in adjusted_captions]
     else:
-        # Use all frame descriptions
         frame_info = [(frame_num, timestamp, desc) for frame_num, timestamp, desc in descriptions]
     
-    # Sort by timestamp
     frame_info.sort(key=lambda x: x[1])
 
-    # Initialize video writer
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(temp_output, fourcc, fps, (frame_width, frame_height))
-
-    # Process the main video
-    frame_count = 0
-    current_desc_idx = 0
-    current_transcript_idx = 0
+    out = cv2.VideoWriter(temp_output, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
+    frame_count = current_desc_idx = current_transcript_idx = 0
 
     with tqdm(total=total_frames, desc="Creating video") as pbar:
         while True:
@@ -999,188 +583,93 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                 break
 
             current_time = frame_count / fps
-
-            # Find appropriate description for current timestamp
-            while (current_desc_idx < len(frame_info) - 1 and 
-                   current_time >= frame_info[current_desc_idx + 1][1]):
+            while current_desc_idx < len(frame_info) - 1 and current_time >= frame_info[current_desc_idx + 1][1]:
                 current_desc_idx += 1
 
-            # Get current description
             frame_number, timestamp, description = frame_info[current_desc_idx]
-
-            # Add caption using display settings from config
             height, width = frame.shape[:2]
-            margin = DISPLAY['MARGIN']['CAPTION']
-            padding = DISPLAY['PADDING']
-            min_line_height = DISPLAY['MIN_LINE_HEIGHT']
-            font = DISPLAY['FONT']
+            margin, padding = DISPLAY['MARGIN']['CAPTION'], DISPLAY['PADDING']
+            min_line_height, font = DISPLAY['MIN_LINE_HEIGHT'], DISPLAY['FONT']
             max_width = int(width * DISPLAY['MAX_WIDTH_RATIO'])
             
-            # Start with timestamp and description
-            if use_synthesis_captions:
-                full_text = description  # Synthesis captions already include context
-            else:
-                full_text = f"[{timestamp:.2f}s] {description}"
-                
-            # Normalize smart quotes and apostrophes to ASCII
-            full_text = full_text.replace('"', '"').replace('"', '"')
-            full_text = full_text.replace("'", "'").replace("'", "'")
-            words = full_text.split()
-            top_lines = []
-            current_line = []
+            full_text = description if use_synthesis_captions else f"[{timestamp:.2f}s] {description}"
+            full_text = full_text.replace('"', '"').replace('"', '"').replace("'", "'").replace("'", "'")
             
             font_scale = min(height * 0.03 / min_line_height, DISPLAY['FONT_SCALE']['CAPTION'])
             
-            # Split text into lines that fit the width
-            for word in words:
+            top_lines = []
+            current_line = []
+            for word in full_text.split():
                 test_line = ' '.join(current_line + [word])
-                (text_width, _), _ = cv2.getTextSize(test_line, font, font_scale, 1)
-                
-                if text_width <= max_width - 2 * margin:
+                if cv2.getTextSize(test_line, font, font_scale, 1)[0][0] <= max_width - 2 * margin:
                     current_line.append(word)
                 else:
                     if current_line:
                         top_lines.append(' '.join(current_line))
                     current_line = [word]
-            
             if current_line:
                 top_lines.append(' '.join(current_line))
 
-            # Handle transcriptions (bottom overlay)
             bottom_lines = []
             if show_transcriptions:
-                # Find appropriate transcript segment
-                while (current_transcript_idx < len(transcript) - 1 and 
-                       current_time >= transcript[current_transcript_idx + 1]["start"]):
+                while current_transcript_idx < len(transcript) - 1 and current_time >= transcript[current_transcript_idx + 1]["start"]:
                     current_transcript_idx += 1
                 
-                # Only use transcript text if we're within its time period
-                transcript_segment = transcript[current_transcript_idx]
-                if (current_time >= transcript_segment["start"] and 
-                    current_time <= transcript_segment["end"]):
-                    current_transcript_text = transcript_segment["text"]
-                    
-                    # Normalize smart quotes and apostrophes in transcript
-                    current_transcript_text = current_transcript_text.replace('"', '"').replace('"', '"')
-                    current_transcript_text = current_transcript_text.replace("'", "'").replace("'", "'")
-                    
-                    # Split transcript into lines
+                segment = transcript[current_transcript_idx]
+                if current_time >= segment["start"] and current_time <= segment["end"]:
+                    text = segment["text"].replace('"', '"').replace('"', '"').replace("'", "'").replace("'", "'")
                     current_line = []
-                    for word in current_transcript_text.split():
+                    for word in text.split():
                         test_line = ' '.join(current_line + [word])
-                        (text_width, _), _ = cv2.getTextSize(test_line, font, font_scale, 1)
-                        
-                        if text_width <= max_width - 2 * margin:
+                        if cv2.getTextSize(test_line, font, font_scale, 1)[0][0] <= max_width - 2 * margin:
                             current_line.append(word)
                         else:
                             if current_line:
                                 bottom_lines.append(' '.join(current_line))
                             current_line = [word]
-                    
                     if current_line:
                         bottom_lines.append(' '.join(current_line))
 
-            # Calculate box dimensions for top overlay (frame descriptions)
-            top_line_count = len(top_lines)
             line_height = max(min_line_height, int(height * 0.03))
-            top_box_height = top_line_count * line_height + 2 * padding
+            top_box_height = len(top_lines) * line_height + 2 * padding
             
-            # Create overlay for text background
             overlay = frame.copy()
-            cv2.rectangle(overlay, 
-                         (margin, margin),
-                         (width - margin, margin + top_box_height),
-                         (0, 0, 0),
-                         -1)
-            
-            # Blend background overlay with original frame
+            cv2.rectangle(overlay, (margin, margin), (width - margin, margin + top_box_height), (0, 0, 0), -1)
             alpha = DISPLAY['OVERLAY_ALPHA']
             frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
             
-            # Draw text directly on frame
             y = margin + padding + line_height
             for line in top_lines:
-                cv2.putText(frame,
-                           line,
-                           (margin + padding, y),
-                           font,
-                           font_scale,
-                           DISPLAY['TEXT_COLOR']['WHITE'],
-                           1,
-                           cv2.LINE_AA)
+                cv2.putText(frame, line, (margin + padding, y), font, font_scale, DISPLAY['TEXT_COLOR']['WHITE'], 1, cv2.LINE_AA)
                 y += line_height
             
-            # If we have speech transcription, add bottom overlay
             if bottom_lines:
-                bottom_line_count = len(bottom_lines)
-                bottom_box_height = bottom_line_count * line_height + 2 * padding
-                
-                # Add speech transcription text (centered with tight background)
-                y = height - bottom_box_height - margin + padding + line_height
+                y = height - (len(bottom_lines) * line_height + 2 * padding) - margin + padding + line_height
                 for line in bottom_lines:
-                    # Calculate text width for centering and background
-                    (text_width, text_height), _ = cv2.getTextSize(line, font, font_scale, 1)
-                    x = (width - text_width) // 2  # Center the text
+                    text_width = cv2.getTextSize(line, font, font_scale, 1)[0][0]
+                    x = (width - text_width) // 2
                     
-                    # Create tight background just for this line
-                    bg_x1 = x - padding
-                    bg_x2 = x + text_width + padding
-                    bg_y1 = y - text_height - padding
-                    bg_y2 = y + padding
-                    
-                    # Draw background rectangle with transparency
                     overlay = frame.copy()
-                    cv2.rectangle(overlay,
-                                (bg_x1, bg_y1),
-                                (bg_x2, bg_y2),
-                                (0, 0, 0),
-                                -1)
+                    cv2.rectangle(overlay, (x - padding, y - cv2.getTextSize(line, font, font_scale, 1)[0][1] - padding),
+                                (x + text_width + padding, y + padding), (0, 0, 0), -1)
                     frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
                     
-                    # Draw text
-                    cv2.putText(frame,
-                               line,
-                               (x, y),
-                               font,
-                               font_scale,
-                               DISPLAY['TEXT_COLOR']['WHITE'],
-                               1,
-                               cv2.LINE_AA)
-                    y += line_height * 1.5  # Increase spacing between lines
-            
+                    cv2.putText(frame, line, (x, y), font, font_scale, DISPLAY['TEXT_COLOR']['WHITE'], 1, cv2.LINE_AA)
+                    y += line_height * 1.5
+
             out.write(frame)
             frame_count += 1
             pbar.update(1)
 
     video.release()
     out.release()
-    # Create summary intro clip with debug metadata
-    summary_path, summary_duration = create_summary_clip(
-        summary, 
-        frame_width, 
-        frame_height, 
-        fps,
-        debug=debug,
-        metadata=debug_metadata
-    )
+
+    summary_path, summary_duration = create_summary_clip(summary, frame_width, frame_height, fps, debug=debug, metadata=debug_metadata)
+    final_output = video_utils.concatenate_videos([summary_path, temp_output], final_output, has_audio, video_path if has_audio else None, summary_duration)
     
-    # Concatenate videos and add audio if present
-    final_output = video_utils.concatenate_videos(
-        video_paths=[summary_path, temp_output],
-        output_path=final_output,
-        has_audio=has_audio,
-        audio_source=video_path if has_audio else None,
-        audio_delay=summary_duration
-    )
-    
-    # Clean up temporary files
     os.remove(temp_output)
     os.remove(summary_path)
-    
-    # Convert to web-compatible format
     web_output = video_utils.convert_to_web_format(final_output)
-    
-    # Remove the non-web version
     os.remove(final_output)
     
     return web_output
@@ -1188,39 +677,23 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
 def process_video_web(video_file, use_frame_selection=False, use_synthesis_captions=False, use_local_llm=False, show_transcriptions=False, debug=False):
     """Process video through web interface."""
     video_path = video_file.name
-    
-    # Skip if this is an output file
     if os.path.basename(video_path).startswith('captioned_') or video_path.endswith('_web.mp4'):
         return "Skipped output file", None, None
 
     start_time = time.time()
-
-    # Get frame count and duration
     frame_count = get_frame_count(video_path)
     if frame_count == 0:
         return "Error: Could not process video.", None, None
         
-    # Get video duration
     video_duration = get_video_duration(video_path)
     if video_duration is None:
         return "Error: Could not get video duration.", None, None
 
-    # Extract metadata if in debug mode
     debug_metadata = None
     if debug:
         try:
-            cmd = [
-                'ffprobe',
-                '-v', 'quiet',
-                '-print_format', 'json',
-                '-show_format',
-                '-show_streams',
-                video_path
-            ]
-            metadata_json = subprocess.check_output(cmd).decode('utf-8')
-            metadata = json.loads(metadata_json)
-            
-            # Determine video type based on duration
+            cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', video_path]
+            metadata = json.loads(subprocess.check_output(cmd).decode('utf-8'))
             video_type = "Short (<30s)" if video_duration < 30 else "Medium (30-90s)" if video_duration < 90 else "Medium-long (90-150s)" if video_duration < 150 else "Long (>150s)"
             
             # Calculate target captions
@@ -1245,7 +718,6 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
                     num_captions = max(8, num_captions)
                     caption_calc = f"min(max(8, {target_captions}), {max_captions})"
             
-            # Extract relevant metadata
             debug_metadata = {
                 'Video Info': {
                     'Duration': f"{video_duration:.1f}s",
@@ -1257,113 +729,59 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
                     'Video Type': video_type,
                     'Target Captions': str(num_captions),
                     'Captions/Second': f"{num_captions/video_duration:.2f}",
-                    'Calculation': caption_calc.replace(' ', '')  # Remove spaces to make it more compact
+                    'Calculation': caption_calc.replace(' ', '')
                 }
             }
-            
         except Exception as e:
             debug_metadata = {'Error': 'Failed to extract metadata'}
 
-    # Transcribe the video
     transcript = transcribe_video(video_path)
-
-    # Select frames based on the chosen method
-    if use_frame_selection:
-        frame_numbers = process_video(video_path)
-    else:
-        frame_numbers = list(range(0, frame_count, 50))
-
-    # Describe frames
+    frame_numbers = process_video(video_path) if use_frame_selection else list(range(0, frame_count, 50))
     descriptions = describe_frames(video_path, frame_numbers)
-
-    # Generate summary and captions
-    synthesis_output, synthesis_captions = summarize_with_hosted_llm(
-        transcript, 
-        descriptions, 
-        video_duration,
-        use_local_llm=use_local_llm,
-        video_path=video_path
-    )
+    synthesis_output, synthesis_captions = summarize_with_hosted_llm(transcript, descriptions, video_duration, use_local_llm=use_local_llm, video_path=video_path)
     
     if synthesis_output is None or (use_synthesis_captions and synthesis_captions is None):
         return "Error: Failed to generate synthesis. Please try again.", None, None
     
-    # Extract summary from synthesis output
     summary_match = re.search(r'<summary>(.*?)</summary>', synthesis_output, re.DOTALL)
     if not summary_match:
         return "Error: Failed to extract summary from synthesis output.", None, None
     
     summary = summary_match.group(1).strip()
-
-    # Create captioned video with summary intro
-    output_video_path = create_captioned_video(
-        video_path, 
-        descriptions, 
-        summary,
-        transcript,
-        synthesis_captions,
-        use_synthesis_captions,
-        show_transcriptions,
-        debug=debug,
-        debug_metadata=debug_metadata
-    )
-
+    output_video_path = create_captioned_video(video_path, descriptions, summary, transcript, synthesis_captions, use_synthesis_captions, show_transcriptions, debug=debug, debug_metadata=debug_metadata)
     total_run_time = time.time() - start_time
 
-    # Save output to JSON file
-    save_output(
-        video_path, 
-        frame_count, 
-        transcript, 
-        descriptions, 
-        summary, 
-        total_run_time,
-        synthesis_output,
-        synthesis_captions,
-        use_local_llm=use_local_llm
-    )
+    save_output(video_path, frame_count, transcript, descriptions, summary, total_run_time, synthesis_output, synthesis_captions, use_local_llm=use_local_llm)
 
-    # Prepare frames with captions for gallery display
     gallery_images = []
     video = cv2.VideoCapture(video_path)
-    
     for frame_number, timestamp, description in descriptions:
         video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
         success, frame = video.read()
         if success:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             height, width = frame.shape[:2]
-            margin = 8
-            padding = 10
-            min_line_height = 20
+            margin, padding, min_line_height = 8, 10, 20
             font = cv2.FONT_HERSHEY_SIMPLEX
             max_width = int(width * 0.9)
-            
             full_text = f"Frame {frame_number} [{timestamp:.2f}s]\n{description}"
-            words = full_text.split()
-            lines = []
-            current_line = []
-            
+            words, lines, current_line = full_text.split(), [], []
             font_scale = min(height * 0.03 / min_line_height, 0.7)
             
             for word in words:
                 test_line = ' '.join(current_line + [word])
                 (text_width, _), _ = cv2.getTextSize(test_line, font, font_scale, 1)
-                
                 if text_width <= max_width - 2 * margin:
                     current_line.append(word)
                 else:
                     if current_line:
                         lines.append(' '.join(current_line))
                     current_line = [word]
-            
             if current_line:
                 lines.append(' '.join(current_line))
-            
-            line_count = len(lines)
+
             line_height = max(min_line_height, int(height * 0.03))
-            box_height = line_count * line_height + 2 * padding
-            
+            box_height = len(lines) * line_height + 2 * padding
             overlay = frame.copy()
             cv2.rectangle(overlay, 
                          (int(margin), int(margin)),
@@ -1386,48 +804,23 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
                            cv2.LINE_AA)
                 y += line_height
             
-            frame_pil = Image.fromarray(frame)
-            gallery_images.append(frame_pil)
+            gallery_images.append(Image.fromarray(frame))
     
     video.release()
+    return output_video_path, f"Video Summary:\n{summary}\n\nTime taken: {total_run_time:.2f} seconds", gallery_images
 
-    return (
-        output_video_path,
-        f"Video Summary:\n{summary}\n\nTime taken: {total_run_time:.2f} seconds", 
-        gallery_images
-    )
 def process_folder(folder_path, args):
     """Process all videos in a folder with retries."""
-    # Get list of video files
     video_extensions = ('.mp4', '.avi', '.mov', '.mkv', '.webm')
-    
-    # Get all video files
-    all_files = [f for f in os.listdir(folder_path) 
-                if os.path.isfile(os.path.join(folder_path, f)) 
-                and f.lower().endswith(video_extensions)]
-    
-    # Filter out output files and temporary files
-    video_files = []
-    for f in all_files:
-        # Skip if it's an output file or temporary file
-        if (f.startswith('captioned_') or 
-            f.startswith('temp_') or 
-            f.startswith('concat_') or 
-            f.endswith('_web.mp4')):
-            continue
-        video_files.append(f)
+    video_files = [f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f)) and f.lower().endswith(video_extensions) and not (f.startswith(('captioned_', 'temp_', 'concat_')) or f.endswith('_web.mp4'))]
     
     if not video_files:
         print("No video files found to process.")
         return
 
-    # Keep track of successfully processed videos
-    processed_videos = set()
-    failed_videos = set()
-    
+    processed_videos, failed_videos = set(), set()
     print(f"\nFound {len(video_files)} videos to process in {folder_path}")
     
-    # Process each video with retries
     for i, video_file in enumerate(video_files, 1):
         if video_file in processed_videos or video_file in failed_videos:
             continue
@@ -1435,50 +828,34 @@ def process_folder(folder_path, args):
         video_path = os.path.join(folder_path, video_file)
         print(f"\nProcessing video {i}/{len(video_files)}: {video_file}")
         
-        # Try processing with up to 10 retries
-        max_retries = 10
         success = False
-        
-        for attempt in range(max_retries):
+        for attempt in range(10):
             if attempt > 0:
-                print(f"Retry attempt {attempt + 1}/{max_retries} for {video_file}")
-                # Force garbage collection and clear CUDA cache before retry
+                print(f"Retry attempt {attempt + 1}/10 for {video_file}")
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             
             try:
-                # Process video using the web function for consistency
-                output_video_path, summary, gallery_images = process_video_web(
-                    type('VideoFile', (), {'name': video_path})(),
-                    use_frame_selection=args.frame_selection,
-                    use_synthesis_captions=args.synthesis_captions,
-                    use_local_llm=args.local,
-                    show_transcriptions=args.transcribe,
-                    debug=args.debug
-                )
-                
-                # Check if the expected output file exists
+                output_video_path, summary, gallery_images = process_video_web(type('VideoFile', (), {'name': video_path})(), use_frame_selection=args.frame_selection, use_synthesis_captions=args.synthesis_captions, use_local_llm=args.local, show_transcriptions=args.transcribe, debug=args.debug)
                 expected_output = os.path.join('outputs', f'captioned_{os.path.splitext(video_file)[0]}_web.mp4')
                 if os.path.exists(expected_output):
                     processed_videos.add(video_file)
                     print(f"Successfully processed {video_file}")
                     success = True
                     break
-                
             except Exception as e:
-                if attempt == max_retries - 1:
-                    print(f"Failed to process {video_file} after {max_retries} attempts: {str(e)}")
+                if attempt == 9:
+                    print(f"Failed to process {video_file} after 10 attempts: {str(e)}")
                     failed_videos.add(video_file)
                 else:
                     print(f"Error processing {video_file} (attempt {attempt + 1}): {str(e)}")
                     if not args.local:
-                        time.sleep(2 * (attempt + 1))  # Exponential backoff only for API calls
+                        time.sleep(2 * (attempt + 1))
         
         if not success and video_file not in failed_videos:
             failed_videos.add(video_file)
             print(f"Failed to process {video_file} after all attempts")
     
-    # Print final summary
     print("\nProcessing complete!")
     print(f"Successfully processed: {len(processed_videos)}/{len(video_files)} videos")
     if failed_videos:
@@ -1488,27 +865,16 @@ def process_folder(folder_path, args):
 
 def recontextualize_summary(summary: str, metadata_context: str, use_local_llm: bool = False) -> str:
     """Recontextualize just the summary using metadata context."""
-    # Get the recontextualization prompt
     prompt = get_recontextualization_prompt()
-    
-    # Create the prompt with context
-    prompt_content = prompt.format(
-        metadata=metadata_context,
-        summary=summary
-    )
+    prompt_content = prompt.format(metadata=metadata_context, summary=summary)
 
-    max_retries = 3
-    for attempt in range(max_retries):
+    for attempt in range(3):
         completion = get_llm_completion(prompt_content, "", use_local_llm=use_local_llm)
-        
         if completion:
-            # Extract summary from completion using same regex pattern style
             summary_match = re.search(r'<recontextualized_summary>(.*?)</recontextualized_summary>', completion, re.DOTALL)
             if summary_match:
-                new_summary = summary_match.group(1).strip()
-                return new_summary
-        
-        if attempt < max_retries - 1:
+                return summary_match.group(1).strip()
+        if attempt < 2:
             time.sleep(2 * (attempt + 1))
     
     return summary
@@ -1526,22 +892,17 @@ def main():
     args = parser.parse_args()
 
     if args.web:
-        # Create Gradio interface with gallery and video output
         iface = gr.Interface(
             fn=process_video_web,
             inputs=[
                 gr.File(label="Upload Video"),
                 gr.Checkbox(label="Use Frame Selection", value=True, info="Recommended: Intelligently selects key frames"),
-                gr.Checkbox(label="Use Synthesis Captions", value=True, info="Recommended: Creates a more pleasant viewing experience"),
+                gr.Checkbox(label="Use Synthesis Captions", value=True, info="Recommended: Creates a more pleasant viewing experience"), 
                 gr.Checkbox(label="Use Local LLM", value=True, info="Use local Llama model instead of OpenAI API (requires model weights)"),
                 gr.Checkbox(label="Show Transcriptions", value=False, info="Show speech transcriptions in the output video"),
                 gr.Checkbox(label="Debug Mode", value=False, info="Show metadata in summary screen")
             ],
-            outputs=[
-                gr.Video(label="Captioned Video"),
-                gr.Textbox(label="Summary"),
-                gr.Gallery(label="Analyzed Frames")
-            ],
+            outputs=[gr.Video(label="Captioned Video"), gr.Textbox(label="Summary"), gr.Gallery(label="Analyzed Frames")],
             title="Video Summarizer",
             description="Upload a video to get a summary and view analyzed frames.",
             allow_flagging="never"
@@ -1549,28 +910,19 @@ def main():
         iface.launch()
     elif args.path:
         start_time = time.time()
-
         if os.path.isdir(args.path):
-            # Process folder
             process_folder(args.path, args)
         else:
-            # Process single video
-            # Get frame count
             frame_count = get_frame_count(args.path)
-            if frame_count == 0:
-                return
-
-            # Process video using the web function for consistency
-            output_video_path, summary, gallery_images = process_video_web(
-                type('VideoFile', (), {'name': args.path})(),
-                use_frame_selection=args.frame_selection,
-                use_synthesis_captions=args.synthesis_captions,
-                use_local_llm=args.local,
-                show_transcriptions=args.transcribe,
-                debug=args.debug
-            )
-    else:
-        pass
+            if frame_count > 0:
+                output_video_path, summary, gallery_images = process_video_web(
+                    type('VideoFile', (), {'name': args.path})(),
+                    use_frame_selection=args.frame_selection,
+                    use_synthesis_captions=args.synthesis_captions, 
+                    use_local_llm=args.local,
+                    show_transcriptions=args.transcribe,
+                    debug=args.debug
+                )
 
 if __name__ == "__main__":
     main()
