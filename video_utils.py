@@ -15,7 +15,6 @@ def get_video_duration(video_path):
             video_path
         ]
         duration = float(subprocess.check_output(cmd).decode().strip())
-        print(f"Video duration: {duration:.2f} seconds")
         return duration
     except Exception as e:
         print(f"Warning: Could not get video duration: {str(e)}")
@@ -81,6 +80,7 @@ def convert_to_web_format(input_path, output_path=None):
         '-crf', '23',           # Reasonable quality
         '-c:a', 'aac',          # AAC audio for web compatibility
         '-movflags', '+faststart',  # Enable fast start for web playback
+        '-loglevel', 'error',   # Suppress output
         output_path
     ]
     subprocess.run(convert_cmd, check=True)
@@ -102,6 +102,7 @@ def concatenate_videos(video_paths, output_path, has_audio=False, audio_source=N
         '-safe', '0',
         '-i', concat_file,
         '-c', 'copy',
+        '-loglevel', 'error',
         concat_output
     ]
     subprocess.run(concat_cmd, check=True)
@@ -116,6 +117,7 @@ def concatenate_videos(video_paths, output_path, has_audio=False, audio_source=N
             '-c:v', 'copy',           # Copy video stream as is
             '-map', '0:v',            # Use video from first input
             '-map', '[delayed_audio]', # Use delayed audio
+            '-loglevel', 'error',
             output_path
         ]
     else:
@@ -123,6 +125,7 @@ def concatenate_videos(video_paths, output_path, has_audio=False, audio_source=N
             'ffmpeg', '-y',
             '-i', concat_output,
             '-c:v', 'copy',
+            '-loglevel', 'error',
             output_path
         ]
     
@@ -144,10 +147,11 @@ def extract_audio(video_path):
             'ffmpeg', '-y',
             '-i', video_path,
             '-vn',  # No video
+            '-loglevel', 'error',
             audio_path
         ]
         subprocess.run(cmd, check=True)
         return audio_path
     except Exception as e:
         print(f"Error extracting audio: {str(e)}")
-        return None 
+        return None

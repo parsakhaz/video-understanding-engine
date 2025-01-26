@@ -543,7 +543,7 @@ python main.py video.mp4 --frame-selection --synthesis-captions
 python main.py /path/to/folder --frame-selection --transcribe
 
 # Process 'inputs' folder with all features
-python main.py inputs --frame-selection --local --save --synthesis-captions --transcribe
+python main.py inputs --frame-selection --local --save --synthesis-captions --transcribe --debug
 
 # Quick processing with hosted LLM and synthesis captions
 python main.py video.mp4 --save --synthesis-captions
