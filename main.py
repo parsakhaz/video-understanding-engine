@@ -219,8 +219,10 @@ def save_output(video_path, frame_count, transcript=None, descriptions=None, sum
     video_type = "Short (<30s)" if video_duration < VIDEO_SETTINGS['MIN_VIDEO_DURATION'] else "Medium (30-90s)" if video_duration < VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION'] else "Medium-long (90-150s)" if video_duration < VIDEO_SETTINGS['LONG_VIDEO_DURATION'] else "Long (>150s)"
     
     if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION']:
-        num_captions = max(CAPTION['LONG_VIDEO']['MIN_CAPTIONS'], frame_count // 2)
-        caption_calc = f"max({CAPTION['LONG_VIDEO']['MIN_CAPTIONS']}, {frame_count} // 2)"
+        # For long videos, base it on duration not frame count
+        base_captions = int(video_duration / 8)  # One caption every 8 seconds
+        num_captions = min(max(15, base_captions), 120)  # Cap at 120 captions
+        caption_calc = f"min(max(15, {video_duration} / 8), 120)"
     elif video_duration > VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION']:
         base_captions = int(video_duration / CAPTION['LONG_VIDEO']['INTERVAL_RATIO'])
         num_captions = min(int(base_captions * 1.25), frame_count // 2)
@@ -575,30 +577,52 @@ def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -
 def parse_synthesis_output(output: str) -> tuple:
     """Parse the synthesis output to extract summary and captions."""
     try:
+        error_collector.add_warning(f"Raw LLM output to parse: {output[:200]}...", source="parse_synthesis_output")
+        
         # Extract summary and captions (both required)
         summary_match = re.search(r'<summary>(.*?)</summary>', output, re.DOTALL)
-        captions_match = re.search(r'<captions>(.*?)</captions>', output, re.DOTALL)
-        if not summary_match or not captions_match:
-            raise ValueError("Missing summary or captions in synthesis output")
+        if not summary_match:
+            error_collector.add_error("No summary tags found in output", source="parse_synthesis_output")
+            error_collector.add_warning(f"Failed to match summary in: {output[:500]}...", source="parse_synthesis_output")
+            return None, None
             
         summary = summary_match.group(1).strip()
+        error_collector.add_warning(f"Successfully extracted summary: {summary[:100]}...", source="parse_synthesis_output")
+        
+        captions_match = re.search(r'<captions>(.*?)</captions>', output, re.DOTALL)
+        if not captions_match:
+            error_collector.add_error("No captions tags found in output", source="parse_synthesis_output")
+            error_collector.add_warning(f"Failed to match captions in: {output[:500]}...", source="parse_synthesis_output")
+            return None, None
+            
         captions_text = captions_match.group(1).strip()
+        error_collector.add_warning(f"Successfully extracted captions text: {captions_text[:100]}...", source="parse_synthesis_output")
         
         # Extract and validate caption timestamps/text
         caption_list = []
-        for timestamp_str, text in re.findall(r'<caption>\[([\d.]+)s?\](.*?)</caption>', captions_text, re.DOTALL):
+        caption_matches = re.findall(r'<caption>\[([\d.]+)s?\](.*?)</caption>', captions_text, re.DOTALL)
+        error_collector.add_warning(f"Found {len(caption_matches)} caption matches", source="parse_synthesis_output")
+        
+        for timestamp_str, text in caption_matches:
             try:
                 text = text.strip()
                 if text:
-                    caption_list.append((float(timestamp_str), text))
-            except ValueError:
+                    timestamp = float(timestamp_str)
+                    caption_list.append((timestamp, text))
+                    error_collector.add_warning(f"Successfully parsed caption: [{timestamp}] {text[:50]}...", source="parse_synthesis_output")
+            except ValueError as e:
+                error_collector.add_error(f"Failed to parse timestamp '{timestamp_str}': {str(e)}", source="parse_synthesis_output")
                 continue
                 
         if not caption_list:
-            raise ValueError("No valid captions found in synthesis output")
+            error_collector.add_error("No valid captions found in synthesis output", source="parse_synthesis_output")
+            return None, None
             
+        error_collector.add_warning(f"Successfully parsed {len(caption_list)} captions", source="parse_synthesis_output")
         return summary, caption_list
-    except (ValueError, AttributeError):
+    except Exception as e:
+        error_collector.add_error(f"Exception in parse_synthesis_output: {str(e)}", source="parse_synthesis_output")
+        error_collector.add_warning(f"Failed to parse output: {output[:500]}...", source="parse_synthesis_output")
         return None, None
 
 def create_summary_clip(summary: str, width: int, height: int, fps: int, debug: bool = False, metadata: dict = None) -> str:
@@ -877,26 +901,32 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
     # Calculate target captions (needed for all videos)
     try:
         error_collector.add_warning(f"Calculating captions for duration: {video_duration}", source="process_video_web")
-        if video_duration > 150:
-            num_captions = max(15, frame_count // 2)
-            caption_calc = f"max(15, {frame_count} // 2)"
-        elif video_duration > 90:
-            base_captions = int(video_duration / 6)
-            num_captions = min(int(base_captions * 1.25), frame_count // 2)
-            num_captions = max(9, num_captions)
-            caption_calc = f"min(max(9, {base_captions} * 1.25), {frame_count} // 2)"
+        
+        # Get key frames first
+        key_frames = process_video(video_path) if use_frame_selection else list(range(0, frame_count, 50))
+        num_key_frames = len(key_frames)
+        
+        if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION']:
+            # For long videos, base it on key frames not total frames
+            num_captions = min(max(15, num_key_frames // 2), 120)  # Cap at 120 captions
+            caption_calc = f"min(max(15, {num_key_frames} // 2), 120)"
+        elif video_duration > VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION']:
+            base_captions = int(video_duration / CAPTION['LONG_VIDEO']['INTERVAL_RATIO'])
+            num_captions = min(int(base_captions * 1.25), num_key_frames // 2)
+            num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
+            caption_calc = f"min(max({CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS']}, {base_captions} * 1.25), {num_key_frames} // 2)"
         else:
-            if video_duration < 30:
-                target_captions = int(video_duration / 3.5)
-                num_captions = min(100, max(4, target_captions))
-                caption_calc = f"min(100, max(4, {video_duration} / 3.5))"
+            if video_duration < VIDEO_SETTINGS['MIN_VIDEO_DURATION']:
+                target_captions = int(video_duration / CAPTION['SHORT_VIDEO']['INTERVAL'])
+                num_captions = min(CAPTION['SHORT_VIDEO']['MAX_CAPTIONS'], max(CAPTION['SHORT_VIDEO']['MIN_CAPTIONS'], target_captions))
+                caption_calc = f"min({CAPTION['SHORT_VIDEO']['MAX_CAPTIONS']}, max({CAPTION['SHORT_VIDEO']['MIN_CAPTIONS']}, {target_captions}))"
             else:
-                caption_interval = 5.0 + (video_duration - 30) * (7.0 - 5.0) / (90 - 30)
+                caption_interval = (CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL'] + (video_duration - VIDEO_SETTINGS['MIN_VIDEO_DURATION']) * (CAPTION['MEDIUM_VIDEO']['MAX_INTERVAL'] - CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL']) / (VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION'] - VIDEO_SETTINGS['MIN_VIDEO_DURATION']))
                 target_captions = int(video_duration / caption_interval)
-                max_captions = min(int(video_duration / 4), frame_count // 3)
+                max_captions = min(int(video_duration / 4), num_key_frames // 3)
                 num_captions = min(target_captions, max_captions)
-                num_captions = max(8, num_captions)
-                caption_calc = f"min(max(8, {target_captions}), {max_captions})"
+                num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
+                caption_calc = f"min(max({CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS']}, {target_captions}), {max_captions})"
         error_collector.add_warning(f"Caption calculation result - num_captions: {num_captions}, calc: {caption_calc}", source="process_video_web")
     except Exception as e:
         error_collector.add_error(f"Caption calculation failed - duration: {video_duration}, frame_count: {frame_count}, error: {str(e)}", source="process_video_web_caption_calc")
