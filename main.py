@@ -686,132 +686,154 @@ def create_summary_clip(summary: str, width: int, height: int, fps: int, debug: 
 
 def create_captioned_video(video_path: str, descriptions: list, summary: str, transcript: list, synthesis_captions: list = None, use_synthesis_captions: bool = False, show_transcriptions: bool = False, output_path: str = None, debug: bool = False, debug_metadata: dict = None) -> str:
     """Create a video with persistent captions from keyframe descriptions and transcriptions."""
-    has_audio = video_utils.has_audio_stream(video_path)
-    use_synthesis_captions = use_synthesis_captions and synthesis_captions
-    
-    if output_path is None:
-        os.makedirs(VIDEO_SETTINGS['OUTPUT_DIR'], exist_ok=True)
-        base_name = os.path.splitext(os.path.basename(video_path))[0]
-        temp_output = os.path.join(VIDEO_SETTINGS['OUTPUT_DIR'], f'temp_{base_name}.mp4')
-        final_output = os.path.join(VIDEO_SETTINGS['OUTPUT_DIR'], f'captioned_{base_name}.mp4')
-    else:
-        temp_output, final_output = output_path + '.temp', output_path
-
-    props = video_utils.get_video_properties(video_path)
-    fps, frame_width, frame_height, total_frames = props['fps'], props['frame_width'], props['frame_height'], props['total_frames']
-
-    video = cv2.VideoCapture(video_path)
-    if not video.isOpened():
-        return None
-
-    if use_synthesis_captions and synthesis_captions:
-        adjusted_captions = [(max(0.0, timestamp - CAPTION['TIMESTAMP_OFFSET']), text) for timestamp, text in synthesis_captions]
-        frame_info = [(int(timestamp * fps), timestamp, text) for timestamp, text in adjusted_captions]
-    else:
-        frame_info = [(frame_num, timestamp, desc) for frame_num, timestamp, desc in descriptions]
-    
-    frame_info.sort(key=lambda x: x[1])
-
-    out = cv2.VideoWriter(temp_output, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
-    frame_count = current_desc_idx = current_transcript_idx = 0
-
-    with tqdm(total=total_frames, desc="Creating video") as pbar:
-        while True:
-            ret, frame = video.read()
-            if not ret:
-                break
-
-            current_time = frame_count / fps
-            while current_desc_idx < len(frame_info) - 1 and current_time >= frame_info[current_desc_idx + 1][1]:
-                current_desc_idx += 1
-
-            frame_number, timestamp, description = frame_info[current_desc_idx]
-            height, width = frame.shape[:2]
-            margin, padding = DISPLAY['MARGIN']['CAPTION'], DISPLAY['PADDING']
-            min_line_height, font = DISPLAY['MIN_LINE_HEIGHT'], DISPLAY['FONT']
-            max_width = int(width * DISPLAY['MAX_WIDTH_RATIO'])
+    for attempt in range(3):  # Add retry at this level
+        try:
+            has_audio = video_utils.has_audio_stream(video_path)
+            use_synthesis_captions = use_synthesis_captions and synthesis_captions
             
-            full_text = description if use_synthesis_captions else f"[{timestamp:.2f}s] {description}"
-            full_text = full_text.replace('"', '"').replace('"', '"').replace("'", "'").replace("'", "'")
-            
-            font_scale = min(height * 0.03 / min_line_height, DISPLAY['FONT_SCALE']['CAPTION'])
-            
-            top_lines = []
-            current_line = []
-            for word in full_text.split():
-                test_line = ' '.join(current_line + [word])
-                if cv2.getTextSize(test_line, font, font_scale, 1)[0][0] <= max_width - 2 * margin:
-                    current_line.append(word)
-                else:
-                    if current_line:
-                        top_lines.append(' '.join(current_line))
-                    current_line = [word]
-            if current_line:
-                top_lines.append(' '.join(current_line))
+            if output_path is None:
+                os.makedirs(VIDEO_SETTINGS['OUTPUT_DIR'], exist_ok=True)
+                base_name = os.path.splitext(os.path.basename(video_path))[0]
+                temp_output = os.path.join(VIDEO_SETTINGS['OUTPUT_DIR'], f'temp_{base_name}.mp4')
+                final_output = os.path.join(VIDEO_SETTINGS['OUTPUT_DIR'], f'captioned_{base_name}.mp4')
+            else:
+                temp_output, final_output = output_path + '.temp', output_path
 
-            bottom_lines = []
-            if show_transcriptions:
-                while current_transcript_idx < len(transcript) - 1 and current_time >= transcript[current_transcript_idx + 1]["start"]:
-                    current_transcript_idx += 1
-                
-                segment = transcript[current_transcript_idx]
-                if current_time >= segment["start"] and current_time <= segment["end"]:
-                    text = segment["text"].replace('"', '"').replace('"', '"').replace("'", "'").replace("'", "'")
+            props = video_utils.get_video_properties(video_path)
+            fps, frame_width, frame_height, total_frames = props['fps'], props['frame_width'], props['frame_height'], props['total_frames']
+
+            video = cv2.VideoCapture(video_path)
+            if not video.isOpened():
+                error_collector.add_error("Could not open video file", source="create_captioned_video")
+                return None
+
+            if use_synthesis_captions and synthesis_captions:
+                adjusted_captions = [(max(0.0, timestamp - CAPTION['TIMESTAMP_OFFSET']), text) for timestamp, text in synthesis_captions]
+                frame_info = [(int(timestamp * fps), timestamp, text) for timestamp, text in adjusted_captions]
+            else:
+                frame_info = [(frame_num, timestamp, desc) for frame_num, timestamp, desc in descriptions]
+            
+            frame_info.sort(key=lambda x: x[1])
+
+            out = cv2.VideoWriter(temp_output, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
+            frame_count = current_desc_idx = current_transcript_idx = 0
+
+            with tqdm(total=total_frames, desc="Creating video") as pbar:
+                while True:
+                    ret, frame = video.read()
+                    if not ret:
+                        break
+
+                    current_time = frame_count / fps
+                    while current_desc_idx < len(frame_info) - 1 and current_time >= frame_info[current_desc_idx + 1][1]:
+                        current_desc_idx += 1
+
+                    frame_number, timestamp, description = frame_info[current_desc_idx]
+                    height, width = frame.shape[:2]
+                    margin, padding = DISPLAY['MARGIN']['CAPTION'], DISPLAY['PADDING']
+                    min_line_height, font = DISPLAY['MIN_LINE_HEIGHT'], DISPLAY['FONT']
+                    max_width = int(width * DISPLAY['MAX_WIDTH_RATIO'])
+                    
+                    full_text = description if use_synthesis_captions else f"[{timestamp:.2f}s] {description}"
+                    full_text = full_text.replace('"', '"').replace('"', '"').replace("'", "'").replace("'", "'")
+                    
+                    font_scale = min(height * 0.03 / min_line_height, DISPLAY['FONT_SCALE']['CAPTION'])
+                    
+                    # Process text into lines
+                    top_lines = []
                     current_line = []
-                    for word in text.split():
+                    for word in full_text.split():
                         test_line = ' '.join(current_line + [word])
                         if cv2.getTextSize(test_line, font, font_scale, 1)[0][0] <= max_width - 2 * margin:
                             current_line.append(word)
                         else:
                             if current_line:
-                                bottom_lines.append(' '.join(current_line))
+                                top_lines.append(' '.join(current_line))
                             current_line = [word]
                     if current_line:
-                        bottom_lines.append(' '.join(current_line))
+                        top_lines.append(' '.join(current_line))
 
-            line_height = max(min_line_height, int(height * 0.03))
-            top_box_height = len(top_lines) * line_height + 2 * padding
-            
-            overlay = frame.copy()
-            cv2.rectangle(overlay, (margin, margin), (width - margin, margin + top_box_height), (0, 0, 0), -1)
-            alpha = DISPLAY['OVERLAY_ALPHA']
-            frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
-            
-            y = margin + padding + line_height
-            for line in top_lines:
-                cv2.putText(frame, line, (margin + padding, y), font, font_scale, DISPLAY['TEXT_COLOR']['WHITE'], 1, cv2.LINE_AA)
-                y += line_height
-            
-            if bottom_lines:
-                y = height - (len(bottom_lines) * line_height + 2 * padding) - margin + padding + line_height
-                for line in bottom_lines:
-                    text_width = cv2.getTextSize(line, font, font_scale, 1)[0][0]
-                    x = (width - text_width) // 2
+                    bottom_lines = []
+                    if show_transcriptions:
+                        while current_transcript_idx < len(transcript) - 1 and current_time >= transcript[current_transcript_idx + 1]["start"]:
+                            current_transcript_idx += 1
+                        
+                        segment = transcript[current_transcript_idx]
+                        if current_time >= segment["start"] and current_time <= segment["end"]:
+                            text = segment["text"].replace('"', '"').replace('"', '"').replace("'", "'").replace("'", "'")
+                            current_line = []
+                            for word in text.split():
+                                test_line = ' '.join(current_line + [word])
+                                if cv2.getTextSize(test_line, font, font_scale, 1)[0][0] <= max_width - 2 * margin:
+                                    current_line.append(word)
+                                else:
+                                    if current_line:
+                                        bottom_lines.append(' '.join(current_line))
+                                    current_line = [word]
+                            if current_line:
+                                bottom_lines.append(' '.join(current_line))
+
+                    line_height = max(min_line_height, int(height * 0.03))
+                    top_box_height = len(top_lines) * line_height + 2 * padding
                     
+                    # Draw top caption box
                     overlay = frame.copy()
-                    cv2.rectangle(overlay, (x - padding, y - cv2.getTextSize(line, font, font_scale, 1)[0][1] - padding),
-                                (x + text_width + padding, y + padding), (0, 0, 0), -1)
+                    cv2.rectangle(overlay, 
+                                (int(margin), int(margin)), 
+                                (int(width - margin), int(margin + top_box_height)), 
+                                (0, 0, 0), 
+                                -1)
+                    alpha = DISPLAY['OVERLAY_ALPHA']
                     frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
                     
-                    cv2.putText(frame, line, (x, y), font, font_scale, DISPLAY['TEXT_COLOR']['WHITE'], 1, cv2.LINE_AA)
-                    y += line_height * 1.5
+                    # Draw top captions
+                    y = int(margin + padding + line_height)
+                    for line in top_lines:
+                        cv2.putText(frame, line, (int(margin + padding), y), font, font_scale, DISPLAY['TEXT_COLOR']['WHITE'], 1, cv2.LINE_AA)
+                        y += line_height
+                    
+                    # Draw bottom transcriptions if any
+                    if bottom_lines:
+                        y = int(height - (len(bottom_lines) * line_height + 2 * padding) - margin + padding + line_height)
+                        for line in bottom_lines:
+                            text_width = cv2.getTextSize(line, font, font_scale, 1)[0][0]
+                            x = (width - text_width) // 2
+                            
+                            overlay = frame.copy()
+                            cv2.rectangle(overlay, 
+                                        (int(x - padding), int(y - line_height + padding)),
+                                        (int(x + text_width + padding), int(y + padding)),
+                                        (0, 0, 0), 
+                                        -1)
+                            frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+                            
+                            cv2.putText(frame, line, (int(x), int(y)), font, font_scale, DISPLAY['TEXT_COLOR']['WHITE'], 1, cv2.LINE_AA)
+                            y += int(line_height * 1.5)
 
-            out.write(frame)
-            frame_count += 1
-            pbar.update(1)
+                    out.write(frame)
+                    frame_count += 1
+                    pbar.update(1)
 
-    video.release()
-    out.release()
+            video.release()
+            out.release()
 
-    summary_path, summary_duration = create_summary_clip(summary, frame_width, frame_height, fps, debug=debug, metadata=debug_metadata)
-    final_output = video_utils.concatenate_videos([summary_path, temp_output], final_output, has_audio, video_path if has_audio else None, summary_duration)
-    
-    os.remove(temp_output)
-    os.remove(summary_path)
-    web_output = video_utils.convert_to_web_format(final_output)
-    os.remove(final_output)
-    
-    return web_output
+            summary_path, summary_duration = create_summary_clip(summary, frame_width, frame_height, fps, debug=debug, metadata=debug_metadata)
+            final_output = video_utils.concatenate_videos([summary_path, temp_output], final_output, has_audio, video_path if has_audio else None, summary_duration)
+            
+            os.remove(temp_output)
+            os.remove(summary_path)
+            web_output = video_utils.convert_to_web_format(final_output)
+            os.remove(final_output)
+            
+            return web_output
+            
+        except Exception as e:
+            error_collector.add_retry("create_captioned_video", attempt, error=e)
+            if attempt < 2:  # Only retry twice
+                error_collector.add_warning(f"Retrying video creation, attempt {attempt + 2}/3", source="create_captioned_video")
+                continue
+            error_collector.add_error(e, source="create_captioned_video")
+            return None
 
 def process_video_web(video_file, use_frame_selection=False, use_synthesis_captions=False, use_local_llm=False, show_transcriptions=False, debug=False):
     """Process video through web interface."""
@@ -836,6 +858,8 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
     video_duration = frame_count / fps if fps > 0 else None
     video.release()
 
+    error_collector.add_warning(f"Video properties - frame_count: {frame_count}, fps: {fps}, duration: {video_duration}", source="process_video_web")
+
     if frame_count == 0:
         error_collector.add_error("Could not process video - zero frames detected", source="process_video_web")
         save_output(video_path, frame_count, success=False)
@@ -848,6 +872,7 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
 
     # Calculate target captions (needed for all videos)
     try:
+        error_collector.add_warning(f"Calculating captions for duration: {video_duration}", source="process_video_web")
         if video_duration > 150:
             num_captions = max(15, frame_count // 2)
             caption_calc = f"max(15, {frame_count} // 2)"
@@ -868,8 +893,9 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
                 num_captions = min(target_captions, max_captions)
                 num_captions = max(8, num_captions)
                 caption_calc = f"min(max(8, {target_captions}), {max_captions})"
+        error_collector.add_warning(f"Caption calculation result - num_captions: {num_captions}, calc: {caption_calc}", source="process_video_web")
     except Exception as e:
-        error_collector.add_error(e, source="process_video_web_caption_calc")
+        error_collector.add_error(f"Caption calculation failed - duration: {video_duration}, frame_count: {frame_count}, error: {str(e)}", source="process_video_web_caption_calc")
         # Fallback to a simple calculation
         num_captions = max(8, min(frame_count // 50, 100))
         caption_calc = "fallback: frame_count // 50"
