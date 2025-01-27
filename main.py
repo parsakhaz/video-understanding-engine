@@ -403,6 +403,10 @@ def chunk_video_data(transcript: list, descriptions: list, chunk_duration: int =
     return chunks
 
 def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, use_local_llm=False, video_path: str = None):
+    # Clear CUDA cache at start of summarization
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        
     load_dotenv()
     metadata_context = ""
     if video_path:
@@ -433,6 +437,10 @@ def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, u
         all_summaries, all_captions = [], []
         
         for chunk_idx, (chunk_transcript, chunk_descriptions) in enumerate(chunks):
+            # Clear CUDA cache before each chunk
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
             synthesis_prompt = get_synthesis_prompt(len(chunk_descriptions), video_duration, metadata_context)
             timestamped_transcript = '\n'.join(f"[{s['start']:.2f}s-{s['end']:.2f}s] {s['text']}" for s in chunk_transcript)
             frame_descriptions = '\n'.join(f"[{t:.2f}s] Frame {f}: {d}" for f, t, d in chunk_descriptions)
@@ -530,12 +538,20 @@ def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, u
 def get_llm_completion(prompt: str, content: str, use_local_llm: bool = False) -> str:
     try:
         if use_local_llm:
+            # Clear CUDA cache before loading model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
             with model_context("llama") as pipeline:
                 if pipeline is None:
                     error_collector.add_error("Failed to load local LLM model", source="get_llm_completion")
                     return None
                 try:
                     outputs = pipeline([{"role": "system", "content": prompt}, {"role": "user", "content": content}], max_new_tokens=8000, temperature=MODEL_SETTINGS['TEMPERATURE'])
+                    # Clear CUDA cache after inference
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        
                     raw_response = str(outputs[0]["generated_text"])
                     for pattern in ["'role': 'assistant', 'content': '", '"role": "assistant", "content": "', "'role': 'assistant', 'content': \"", "role': 'assistant', 'content': '", "role\": \"assistant\", \"content\": \""]:
                         assistant_start = raw_response.find(pattern)
@@ -902,9 +918,9 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
     try:
         error_collector.add_warning(f"Calculating captions for duration: {video_duration}", source="process_video_web")
         
-        # Get key frames first
-        key_frames = process_video(video_path) if use_frame_selection else list(range(0, frame_count, 50))
-        num_key_frames = len(key_frames)
+        # Get key frames first and store them for later use
+        frame_numbers = process_video(video_path) if use_frame_selection else list(range(0, frame_count, 50))
+        num_key_frames = len(frame_numbers)
         
         if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION']:
             # For long videos, base it on key frames not total frames
@@ -987,7 +1003,7 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
 
     try:
         transcript = transcribe_video(video_path)
-        frame_numbers = process_video(video_path) if use_frame_selection else list(range(0, frame_count, 50))
+        # Reuse frame_numbers from earlier instead of calling process_video again
         descriptions = describe_frames(video_path, frame_numbers)
         synthesis_output, synthesis_captions = summarize_with_hosted_llm(transcript, descriptions, video_duration, use_local_llm=use_local_llm, video_path=video_path)
         

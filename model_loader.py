@@ -20,6 +20,11 @@ def model_context(model_type: str):
     """Context manager for safely loading and cleaning up models."""
     model = None
     try:
+        # Clear CUDA cache before loading model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()  # Ensure all CUDA operations are finished
+            
         if model_type == "whisper":
             model = whisper.load_model(MODEL_SETTINGS['WHISPER_MODEL'])
         elif model_type == "moondream":
@@ -64,23 +69,37 @@ def model_context(model_type: str):
         print(f"Error loading {model_type} model: {e}")
         yield None
     finally:
-        cleanup_model(model)
+        cleanup_model(model, model_type)
 
-def cleanup_model(model):
+def cleanup_model(model, model_type=None):
     """Clean up model resources."""
     try:
         if isinstance(model, tuple):
             for component in model:
                 if component is not None:
                     try:
+                        if hasattr(component, 'to'):
+                            component.to('cpu')
                         del component
                     except:
                         pass
         elif model is not None:
+            if hasattr(model, 'to'):
+                model.to('cpu')  # Move model to CPU before deletion
             del model
             
         if torch.cuda.is_available():
+            # Aggressive cleanup
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()  # Ensure all CUDA operations are finished
+            
+            # For LLama models, which can be memory-hungry
+            if model_type == "llama":
+                import gc
+                gc.collect()  # Run garbage collection
+                
+            # Reset peak memory stats
+            torch.cuda.reset_peak_memory_stats()
             
     except Exception as e:
         print(f"Error cleaning up model: {e}")
