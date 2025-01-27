@@ -856,14 +856,16 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                     if bottom_lines:
                         bottom_box_height = len(bottom_lines) * line_height + 2 * padding
                         
-                        # Calculate max text width for background box
+                        # Calculate max text width and box width
                         max_text_width = max(cv2.getTextSize(line, font, font_scale, 1)[0][0] for line in bottom_lines)
+                        box_width = max_text_width + 2 * padding
+                        box_x_start = (width - box_width) // 2
                         
                         # Draw bottom caption box first
                         overlay = frame.copy()
                         cv2.rectangle(overlay, 
-                                    (int(margin), int(height - margin - bottom_box_height)),
-                                    (int(margin + max_text_width + 2 * padding), int(height - margin)),
+                                    (box_x_start, int(height - margin - bottom_box_height)),
+                                    (box_x_start + box_width, int(height - margin)),
                                     (0, 0, 0), 
                                     -1)
                         frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
@@ -871,7 +873,9 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                         # Draw text
                         y = int(height - margin - bottom_box_height + padding + line_height)
                         for line in bottom_lines:
-                            cv2.putText(frame, line, (int(margin + padding), y), font, font_scale, DISPLAY['TEXT_COLOR']['WHITE'], 1, cv2.LINE_AA)
+                            text_width = cv2.getTextSize(line, font, font_scale, 1)[0][0]
+                            x = (width - text_width) // 2
+                            cv2.putText(frame, line, (x, y), font, font_scale, DISPLAY['TEXT_COLOR']['WHITE'], 1, cv2.LINE_AA)
                             y += line_height
 
                     out.write(frame)
