@@ -20,13 +20,8 @@ def process_batch(frames, model, preprocess, device):
     with torch.no_grad(), torch.amp.autocast('cuda'):
         image_features = model.encode_image(preprocessed_images)
         image_features = F.normalize(image_features, dim=-1)
-        # Move features to CPU immediately and clear CUDA cache
-        features_cpu = image_features.cpu().numpy()
-        del image_features
-        del preprocessed_images
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        return features_cpu
+
+    return image_features.cpu().numpy()
 
 def sliding_window_filter(similarities, window_size=30):
     differences = []
@@ -82,9 +77,7 @@ def get_or_compute_embeddings(video_path):
 
     if os.path.exists(cache_file):
         print(f"Loading cached embeddings from {cache_file}")
-        # Load embeddings in chunks to avoid memory issues
-        embeddings = np.load(cache_file, mmap_mode='r')  # Memory-map the file
-        return embeddings.copy()  # Return a copy to ensure it's loaded into memory properly
+        return np.load(cache_file)
 
     print(f"No cache found. Loading model and computing embeddings for {video_path}")
     with model_context("clip") as model_tuple:
@@ -97,7 +90,7 @@ def get_or_compute_embeddings(video_path):
         cap = cv2.VideoCapture(video_path)
         frame_embeddings = []
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        batch_size = 32  # Reduced batch size to manage memory better
+        batch_size = 64
 
         with tqdm(total=total_frames, desc="Processing frames") as pbar:
             while cap.isOpened():
@@ -114,10 +107,6 @@ def get_or_compute_embeddings(video_path):
                 batch_embeddings = process_batch(batch_frames, model, preprocess, device)
                 frame_embeddings.extend(batch_embeddings)
                 pbar.update(len(batch_frames))
-                
-                # Clear any remaining CUDA cache after each batch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
 
         cap.release()
         frame_embeddings = np.array(frame_embeddings)
@@ -132,31 +121,23 @@ def get_or_compute_embeddings(video_path):
 def process_video(video_path):
     # Get embeddings (either from cache or by computing)
     frame_embeddings = get_or_compute_embeddings(video_path)
-    
-    if frame_embeddings is None:
-        return []
 
     # Calculate similarities and apply sliding window filter
-    print('finding cosine similarities')
+    print(f'finding cosine similarities')
     cosine_similarities = [cosine_similarity(frame_embeddings[i-1].reshape(1, -1),
                                             frame_embeddings[i].reshape(1, -1))[0][0]
                         for i in range(1, len(frame_embeddings))]
 
-    print('finding filtered differences')
+    print(f'finding filtered differences')
     filtered_differences = sliding_window_filter(frame_embeddings)
 
-    # Clear memory after computing differences
-    del frame_embeddings
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    print('finding interesting frames')
+    print(f'finding interesting frames')
     novelty_frames, cluster_frames = find_interesting_frames(filtered_differences, frame_embeddings)
 
-    # Create plots directory and save plot
+    # Create the frame_analysis_plots directory if it doesn't exist
     plots_dir = 'frame_analysis_plots'
     os.makedirs(plots_dir, exist_ok=True)
-    
+
     # Plot results
     fig, ax = plt.subplots(figsize=(20, 10))
 
@@ -180,18 +161,19 @@ def process_video(video_path):
     ax.set_ylim(0.0, 1.0)
     ax.legend()
     ax.grid(True)
+
     plt.tight_layout()
+
+    # Save the plot in the frame_analysis_plots directory
+    plot_filename = f'{os.path.splitext(os.path.basename(video_path))[0]}_frame_analysis.png'
+    plot_path = os.path.join(plots_dir, plot_filename)
     plt.savefig(plot_path, dpi=300)
-    plt.close('all')  # Ensure plot memory is cleared
-    
+    plt.close()
+
     print(f"Plot saved as {plot_path}")
 
     all_key_frames = sorted(set(novelty_frames + cluster_frames))
     print(f"Key frames to use: {all_key_frames}")
-
-    # Clear any remaining memory
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
     return all_key_frames
 

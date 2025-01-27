@@ -918,9 +918,9 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
     try:
         error_collector.add_warning(f"Calculating captions for duration: {video_duration}", source="process_video_web")
         
-        # Get key frames first and store them for later use
-        frame_numbers = process_video(video_path) if use_frame_selection else list(range(0, frame_count, 50))
-        num_key_frames = len(frame_numbers)
+        # Get key frames first
+        key_frames = process_video(video_path) if use_frame_selection else list(range(0, frame_count, 50))
+        num_key_frames = len(key_frames)
         
         if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION']:
             # For long videos, base it on key frames not total frames
@@ -1003,7 +1003,7 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
 
     try:
         transcript = transcribe_video(video_path)
-        # Reuse frame_numbers from earlier instead of calling process_video again
+        frame_numbers = process_video(video_path) if use_frame_selection else list(range(0, frame_count, 50))
         descriptions = describe_frames(video_path, frame_numbers)
         synthesis_output, synthesis_captions = summarize_with_hosted_llm(transcript, descriptions, video_duration, use_local_llm=use_local_llm, video_path=video_path)
         
