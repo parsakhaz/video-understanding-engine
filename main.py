@@ -192,10 +192,29 @@ def get_frame_count(video_path):
     return frame_count
 
 def save_output(video_path, frame_count, transcript=None, descriptions=None, summary=None, total_run_time=None, synthesis_output=None, synthesis_captions=None, use_local_llm=False, success=False):
+    """Save output to a log file. Creates a new file at start of run, updates it at the end."""
     os.makedirs('logs', exist_ok=True)
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     
-    # Use existing log file if it exists for this run, otherwise create new one
+    # For initial log creation (no transcript/descriptions/summary)
+    if transcript is None and descriptions is None and summary is None:
+        timestamp = datetime.now().isoformat().replace(':', '-')
+        filename = f"logs/{timestamp}_{video_name}.json"
+        output = {
+            "processing_info": {
+                "timestamp": datetime.now().isoformat(),
+                "success": success
+            },
+            "video_metadata": {
+                "path": video_path,
+                "frame_count": frame_count
+            }
+        }
+        with open(filename, 'w') as f:
+            json.dump(output, f, indent=2)
+        return
+
+    # For updating existing log
     existing_logs = sorted([f for f in os.listdir('logs') if f.endswith(f'_{video_name}.json')], reverse=True)
     if existing_logs and time.time() - os.path.getctime(os.path.join('logs', existing_logs[0])) < 3600:  # Within last hour
         filename = os.path.join('logs', existing_logs[0])
@@ -208,6 +227,7 @@ def save_output(video_path, frame_count, transcript=None, descriptions=None, sum
             filename = f"logs/{timestamp}_{video_name}.json"
             output = {}
     else:
+        # Shouldn't happen as we should have created a log at start
         timestamp = datetime.now().isoformat().replace(':', '-')
         filename = f"logs/{timestamp}_{video_name}.json"
         output = {}
@@ -904,14 +924,15 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
 
     error_collector.add_warning(f"Video properties - frame_count: {frame_count}, fps: {fps}, duration: {video_duration}", source="process_video_web")
 
+    # Initialize log at start with basic info
+    save_output(video_path, frame_count, success=False)
+
     if frame_count == 0:
         error_collector.add_error("Could not process video - zero frames detected", source="process_video_web")
-        save_output(video_path, frame_count, success=False)
         return "Error: Could not process video.", None, None
         
     if video_duration is None or fps <= 0:
         error_collector.add_error("Could not determine video duration or invalid FPS", source="process_video_web")
-        save_output(video_path, frame_count, success=False)
         return "Error: Could not get video duration.", None, None
 
     # Calculate target captions (needed for all videos)
@@ -997,9 +1018,6 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
                     'File Size': f"{os.path.getsize(video_path) / (1024*1024):.1f}MB"
                 }
             }
-
-    # Initialize log at start
-    save_output(video_path, frame_count, success=False)
 
     try:
         transcript = transcribe_video(video_path)
