@@ -108,4 +108,11 @@ SIMILARITY = {
         "copyright",
         "trademark"
     ]
+}
+
+# Caption Density Settings
+CAPTION_DENSITY = {
+    'MIN': 0.25,      # Minimum density multiplier (1/4 as many captions)
+    'MAX': 5.0,       # Maximum density multiplier (5x as many captions)
+    'DEFAULT': 1.0    # Default density multiplier
 } 

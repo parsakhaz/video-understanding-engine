@@ -12,7 +12,7 @@ import gradio as gr
 from difflib import SequenceMatcher
 from prompts import get_frame_description_prompt, get_recontextualization_prompt, get_final_summary_prompt
 import video_utils
-from config import VIDEO_SETTINGS, FRAME_SELECTION, MODEL_SETTINGS, DISPLAY, RETRY, CAPTION, SIMILARITY
+from config import VIDEO_SETTINGS, FRAME_SELECTION, MODEL_SETTINGS, DISPLAY, RETRY, CAPTION, SIMILARITY, CAPTION_DENSITY
 from model_loader import model_context
 
 class ErrorCollector:
@@ -191,7 +191,7 @@ def get_frame_count(video_path):
     video.release()
     return frame_count
 
-def save_output(video_path, frame_count, transcript=None, descriptions=None, summary=None, total_run_time=None, synthesis_output=None, synthesis_captions=None, use_local_llm=False, success=False):
+def save_output(video_path, frame_count, transcript=None, descriptions=None, summary=None, total_run_time=None, synthesis_output=None, synthesis_captions=None, use_local_llm=False, success=False, caption_density=CAPTION_DENSITY['DEFAULT']):
     """Save output to a log file. Creates a new file at start of run, updates it at the end."""
     os.makedirs('logs', exist_ok=True)
     video_name = os.path.splitext(os.path.basename(video_path))[0]
@@ -270,7 +270,7 @@ def save_output(video_path, frame_count, transcript=None, descriptions=None, sum
 
     cache_path = os.path.join('embedding_cache', f'{video_name}.npy')
     embedding_cache_exists = os.path.exists(cache_path)
-
+    
     # Update the output dictionary with new information
     output.update({
         "processing_info": {
@@ -281,9 +281,20 @@ def save_output(video_path, frame_count, transcript=None, descriptions=None, sum
             "success": success
         },
         "configuration": {"video_settings": VIDEO_SETTINGS, "frame_selection": FRAME_SELECTION, "model_settings": MODEL_SETTINGS, "display": DISPLAY, "retry": RETRY, "caption": CAPTION, "similarity": SIMILARITY},
-        "prompts": {"frame_description": frame_description_prompt, "recontextualization": get_recontextualization_prompt(), "final_summary": get_final_summary_prompt(), "synthesis": get_synthesis_prompt(len(descriptions) if descriptions else 0, video_duration, metadata_context=metadata_context), "actual_prompts_used": {"frame_description": frame_description_prompt, "synthesis": synthesis_output, "recontextualization": metadata_context if metadata else None, "final_summary": get_final_summary_prompt() if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION'] else None}},
+        "prompts": {
+            "frame_description": get_frame_description_prompt(),
+            "recontextualization_template": get_recontextualization_prompt(),
+            "final_summary": get_final_summary_prompt(),
+            "synthesis": get_synthesis_prompt(len(descriptions) if descriptions else 0, video_duration, metadata_context=metadata_context, caption_density=caption_density),
+            "actual_prompts_used": {
+                "frame_description": get_frame_description_prompt(),
+                "synthesis": synthesis_output,
+                "metadata_context": metadata_context if metadata else None,
+                "final_summary": get_final_summary_prompt() if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION'] else None
+            }
+        },
         "video_metadata": {"path": video_path, "frame_count": frame_count, "duration": video_duration, "fps": fps, "resolution": {"width": width, "height": height}, "ffprobe_data": metadata, "video_type": video_type},
-        "caption_analysis": {"video_type": video_type, "target_captions": num_captions, "captions_per_second": num_captions/video_duration if video_duration else None, "calculation_formula": caption_calc, "actual_captions_generated": len(synthesis_captions) if synthesis_captions else 0},
+        "caption_analysis": {"video_type": video_type, "density_multiplier": caption_density, "target_captions": num_captions, "captions_per_second": num_captions/video_duration if video_duration else None, "calculation_formula": caption_calc, "actual_captions_generated": len(synthesis_captions) if synthesis_captions else 0},
         "model_info": {
             "frame_description_prompt": frame_description_prompt,
             "whisper_model": MODEL_SETTINGS['WHISPER_MODEL'],
@@ -298,7 +309,7 @@ def save_output(video_path, frame_count, transcript=None, descriptions=None, sum
     with open(filename, 'w') as f:
         json.dump(output, f, indent=2)
 
-def get_synthesis_prompt(num_keyframes: int, video_duration: float, metadata_context: str = "") -> str:
+def get_synthesis_prompt(num_keyframes: int, video_duration: float, metadata_context: str = "", caption_density: float = CAPTION_DENSITY['DEFAULT']) -> str:
     if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION']:
         num_captions = max(CAPTION['LONG_VIDEO']['MIN_CAPTIONS'], num_keyframes // 2)
     elif video_duration > VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION']:
@@ -315,6 +326,9 @@ def get_synthesis_prompt(num_keyframes: int, video_duration: float, metadata_con
             max_captions = min(int(video_duration / 4), num_keyframes // 3)
             num_captions = min(target_captions, max_captions)
             num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
+
+    # Apply density multiplier to final caption count
+    num_captions = int(num_captions * caption_density)
 
     metadata_section = f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions, with the following important context about the video's origin and purpose:\n\n{metadata_context}\n\nThis metadata should inform your understanding of:\n- The video's intended purpose and audience\n- Appropriate style and tone for descriptions\n- Professional vs. amateur context\n- Genre-specific considerations\n""" if metadata_context else "You are tasked with summarizing and captioning a video based on its transcript and frame descriptions."
     
@@ -379,18 +393,18 @@ Requirements for Summary:
 8. Focus on clearly visible elements rather than interpretations
 
 Requirements for Captions:
-1. Generate exactly {num_captions} captions
+1. Generate exactly {num_captions} captions, with a minimum of 2 seconds between each caption.
 2. Each caption MUST:
    - Start with a timestamp in [X.X] format
-   - Use the EARLIEST timestamp where a scene or action begins
+   - Use the EARLIEST timestamp where a scene or action that is clearly visible begins
    - Be 20-50 words long
    - Focus on observable events and context
    - Avoid attributing speech or actions unless explicitly clear
-3. Timestamps should be reasonably spaced throughout this video
-4. Focus on what is definitively shown or heard, not assumptions
+3. Timestamps should timed accurately throughout this video
+4. Focus on what is definitively shown or heard, not assumptions. Overarching themes and emotions are more important than specific details.
 5. IMPORTANT: When multiple frames describe the same scene or action, use the EARLIEST timestamp
-6. Default to neutral terms like "a person" or "someone" when identities are unclear
-7. Use passive voice when action source is ambiguous
+6. Default to neutral terms like "a person" or "someone" when identities are unclear.
+7. Use passive voice when action source is ambiguous.
 8. Describe only what is visually observable and keep descriptions objective
 
 Input sections:
@@ -422,7 +436,7 @@ def chunk_video_data(transcript: list, descriptions: list, chunk_duration: int =
     
     return chunks
 
-def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, use_local_llm=False, video_path: str = None):
+def summarize_with_hosted_llm(transcript: list, descriptions: list, video_duration: float, use_local_llm: bool = False, video_path: str = None, caption_density: float = CAPTION_DENSITY['DEFAULT']):
     # Clear CUDA cache at start of summarization
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -461,7 +475,7 @@ def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, u
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 
-            synthesis_prompt = get_synthesis_prompt(len(chunk_descriptions), video_duration, metadata_context)
+            synthesis_prompt = get_synthesis_prompt(len(chunk_descriptions), video_duration, metadata_context, caption_density)
             timestamped_transcript = '\n'.join(f"[{s['start']:.2f}s-{s['end']:.2f}s] {s['text']}" for s in chunk_transcript)
             frame_descriptions = '\n'.join(f"[{t:.2f}s] Frame {f}: {d}" for f, t, d in chunk_descriptions)
             user_content = f"<transcript>\n{timestamped_transcript}\n</transcript>\n\n<frame_descriptions>\n{frame_descriptions}\n</frame_descriptions>"
@@ -525,7 +539,7 @@ def summarize_with_hosted_llm(transcript, descriptions, video_duration: float, u
                 if attempt < 2:
                     time.sleep(2 * (attempt + 1))
     else:
-        synthesis_prompt = get_synthesis_prompt(len(descriptions), video_duration)
+        synthesis_prompt = get_synthesis_prompt(len(descriptions), video_duration, metadata_context, caption_density)
         timestamped_transcript = '\n'.join(f"[{s['start']:.2f}s-{s['end']:.2f}s] {s['text']}" for s in transcript)
         frame_descriptions = '\n'.join(f"[{t:.2f}s] Frame {f}: {d}" for f, t, d in descriptions)
         user_content = f"<transcript>\n{timestamped_transcript}\n</transcript>\n\n<frame_descriptions>\n{frame_descriptions}\n</frame_descriptions>"
@@ -903,7 +917,64 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
             error_collector.add_error(e, source="create_captioned_video")
             return None
 
-def process_video_web(video_file, use_frame_selection=False, use_synthesis_captions=False, use_local_llm=False, show_transcriptions=False, debug=False):
+def calculate_target_captions(video_duration: float, frame_count: int, density: float = CAPTION_DENSITY['DEFAULT']) -> tuple:
+    """Calculate the target number of captions based on video duration and density preference."""
+    # Clamp density between MIN and MAX values
+    density = max(CAPTION_DENSITY['MIN'], min(CAPTION_DENSITY['MAX'], float(density)))
+    
+    if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION']:
+        base_captions = int(video_duration / 8)  # One caption every 8 seconds
+        num_captions = min(max(15, base_captions), 120)  # Cap at 120 captions
+        caption_calc = f"min(max(15, {video_duration} / 8), 120) * {density:.2f}"
+    elif video_duration > VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION']:
+        base_captions = int(video_duration / CAPTION['LONG_VIDEO']['INTERVAL_RATIO'])
+        num_captions = min(int(base_captions * 1.25), frame_count // 2)
+        num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
+        caption_calc = f"min(max({CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS']}, {base_captions} * 1.25), {frame_count} // 2) * {density:.2f}"
+    else:
+        if video_duration < VIDEO_SETTINGS['MIN_VIDEO_DURATION']:
+            target_captions = int(video_duration / CAPTION['SHORT_VIDEO']['INTERVAL'])
+            num_captions = min(CAPTION['SHORT_VIDEO']['MAX_CAPTIONS'], max(CAPTION['SHORT_VIDEO']['MIN_CAPTIONS'], target_captions))
+            caption_calc = f"min({CAPTION['SHORT_VIDEO']['MAX_CAPTIONS']}, max({CAPTION['SHORT_VIDEO']['MIN_CAPTIONS']}, {target_captions})) * {density:.2f}"
+        else:
+            caption_interval = (CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL'] + 
+                              (video_duration - VIDEO_SETTINGS['MIN_VIDEO_DURATION']) * 
+                              (CAPTION['MEDIUM_VIDEO']['MAX_INTERVAL'] - CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL']) / 
+                              (VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION'] - VIDEO_SETTINGS['MIN_VIDEO_DURATION']))
+            target_captions = int(video_duration / caption_interval)
+            max_captions = min(int(video_duration / 4), frame_count // 3)
+            num_captions = min(target_captions, max_captions)
+            num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
+            caption_calc = f"min(max({CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS']}, {target_captions}), {max_captions}) * {density:.2f}"
+    
+    num_captions = int(num_captions * density)
+    return num_captions, caption_calc
+
+def update_caption_estimate(video_file, density=CAPTION_DENSITY['DEFAULT']):
+    """Calculate and return estimated caption count for a video."""
+    if not video_file:
+        return "Upload a video to see caption estimate"
+    
+    try:
+        density = float(density)
+    except (TypeError, ValueError):
+        density = CAPTION_DENSITY['DEFAULT']
+        
+    video = cv2.VideoCapture(video_file.name)
+    frame_count = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = video.get(cv2.CAP_PROP_FPS)
+    video_duration = frame_count / fps if fps > 0 else None
+    video.release()
+    
+    if not video_duration:
+        return "Could not calculate video duration"
+        
+    num_captions, _ = calculate_target_captions(video_duration, frame_count, density)
+    return f"Estimated {num_captions} captions ({density:.2f}x density) for {video_duration:.1f}s video"
+
+def process_video_web(video_file, use_frame_selection=False, use_synthesis_captions=False, 
+                     use_local_llm=False, show_transcriptions=False, debug=False,
+                     caption_density=CAPTION_DENSITY['DEFAULT']):
     """Process video through web interface."""
     video_path = video_file.name
     if os.path.basename(video_path).startswith('captioned_') or video_path.endswith('_web.mp4'):
@@ -916,7 +987,7 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
     video = cv2.VideoCapture(video_path)
     if not video.isOpened():
         error_collector.add_error("Could not open video file", source="process_video_web")
-        save_output(video_path, 0, success=False)
+        save_output(video_path, 0, success=False, caption_density=caption_density)
         return "Error: Could not open video file.", None, None
         
     frame_count = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -929,7 +1000,7 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
     error_collector.add_warning(f"Video properties - frame_count: {frame_count}, fps: {fps}, duration: {video_duration}", source="process_video_web")
 
     # Initialize log at start with basic info
-    save_output(video_path, frame_count, success=False)
+    save_output(video_path, frame_count, success=False, caption_density=caption_density)
 
     if frame_count == 0:
         error_collector.add_error("Could not process video - zero frames detected", source="process_video_web")
@@ -939,41 +1010,18 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
         error_collector.add_error("Could not determine video duration or invalid FPS", source="process_video_web")
         return "Error: Could not get video duration.", None, None
 
-    # Calculate target captions (needed for all videos)
+    # Calculate target captions using new function
     try:
         error_collector.add_warning(f"Calculating captions for duration: {video_duration}", source="process_video_web")
-        
-        # Get key frames first
-        key_frames = process_video(video_path) if use_frame_selection else list(range(0, frame_count, 50))
-        num_key_frames = len(key_frames)
-        
-        if video_duration > VIDEO_SETTINGS['LONG_VIDEO_DURATION']:
-            # For long videos, base it on key frames not total frames
-            num_captions = min(max(15, num_key_frames // 2), 120)  # Cap at 120 captions
-            caption_calc = f"min(max(15, {num_key_frames} // 2), 120)"
-        elif video_duration > VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION']:
-            base_captions = int(video_duration / CAPTION['LONG_VIDEO']['INTERVAL_RATIO'])
-            num_captions = min(int(base_captions * 1.25), num_key_frames // 2)
-            num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
-            caption_calc = f"min(max({CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS']}, {base_captions} * 1.25), {num_key_frames} // 2)"
-        else:
-            if video_duration < VIDEO_SETTINGS['MIN_VIDEO_DURATION']:
-                target_captions = int(video_duration / CAPTION['SHORT_VIDEO']['INTERVAL'])
-                num_captions = min(CAPTION['SHORT_VIDEO']['MAX_CAPTIONS'], max(CAPTION['SHORT_VIDEO']['MIN_CAPTIONS'], target_captions))
-                caption_calc = f"min({CAPTION['SHORT_VIDEO']['MAX_CAPTIONS']}, max({CAPTION['SHORT_VIDEO']['MIN_CAPTIONS']}, {target_captions}))"
-            else:
-                caption_interval = (CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL'] + (video_duration - VIDEO_SETTINGS['MIN_VIDEO_DURATION']) * (CAPTION['MEDIUM_VIDEO']['MAX_INTERVAL'] - CAPTION['MEDIUM_VIDEO']['BASE_INTERVAL']) / (VIDEO_SETTINGS['MEDIUM_VIDEO_DURATION'] - VIDEO_SETTINGS['MIN_VIDEO_DURATION']))
-                target_captions = int(video_duration / caption_interval)
-                max_captions = min(int(video_duration / 4), num_key_frames // 3)
-                num_captions = min(target_captions, max_captions)
-                num_captions = max(CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS'], num_captions)
-                caption_calc = f"min(max({CAPTION['MEDIUM_VIDEO']['MIN_CAPTIONS']}, {target_captions}), {max_captions})"
-        error_collector.add_warning(f"Caption calculation result - num_captions: {num_captions}, calc: {caption_calc}", source="process_video_web")
+        base_captions, caption_calc = calculate_target_captions(video_duration, frame_count, 1.0)  # Get base count with no multiplier
+        final_captions, _ = calculate_target_captions(video_duration, frame_count, caption_density)  # Get final count with multiplier
+        error_collector.add_warning(f"Caption calculation result - base_captions: {base_captions}, final_captions: {final_captions}, calc: {caption_calc}", source="process_video_web")
     except Exception as e:
         error_collector.add_error(f"Caption calculation failed - duration: {video_duration}, frame_count: {frame_count}, error: {str(e)}", source="process_video_web_caption_calc")
         # Fallback to a simple calculation
-        num_captions = max(8, min(frame_count // 50, 100))
-        caption_calc = "fallback: frame_count // 50"
+        base_captions = max(8, min(frame_count // 50, 100))
+        final_captions = int(base_captions * caption_density)
+        caption_calc = f"fallback: {base_captions} * {caption_density:.2f}"
 
     debug_metadata = None
     if debug:
@@ -991,9 +1039,11 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
             # Add caption info second
             debug_metadata['Caption Info'] = {
                 'Video Type': video_type,
-                'Target Captions': str(num_captions),
-                'Captions/Second': f"{num_captions/video_duration:.2f}",
-                'Calculation': caption_calc.replace(' ', '')
+                'Density Multiplier': f"{caption_density:.2f}x",
+                'Base Caption Count': str(base_captions),
+                'Final Caption Count': str(final_captions),
+                'Captions/Second': f"{final_captions/video_duration:.2f}",
+                'Raw Calculation': caption_calc.replace(' ', '')
             }
 
             # Add video info last
@@ -1010,8 +1060,8 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
             # Still provide basic metadata from OpenCV, maintaining the same order
             debug_metadata = {
                 'Caption Info': {
-                    'Target Captions': str(num_captions),
-                    'Captions/Second': f"{num_captions/video_duration:.2f}",
+                    'Target Captions': str(final_captions),
+                    'Captions/Second': f"{final_captions/video_duration:.2f}",
                     'Calculation': caption_calc.replace(' ', '')
                 },
                 'Video Info': {
@@ -1027,17 +1077,24 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
         transcript = transcribe_video(video_path)
         frame_numbers = process_video(video_path) if use_frame_selection else list(range(0, frame_count, 50))
         descriptions = describe_frames(video_path, frame_numbers)
-        synthesis_output, synthesis_captions = summarize_with_hosted_llm(transcript, descriptions, video_duration, use_local_llm=use_local_llm, video_path=video_path)
+        synthesis_output, synthesis_captions = summarize_with_hosted_llm(
+            transcript, 
+            descriptions, 
+            video_duration, 
+            use_local_llm=use_local_llm, 
+            video_path=video_path,
+            caption_density=caption_density
+        )
         
         if synthesis_output is None or (use_synthesis_captions and synthesis_captions is None):
             error_collector.add_error("Failed to generate synthesis", source="process_video_web")
-            save_output(video_path, frame_count, transcript, descriptions, success=False)
+            save_output(video_path, frame_count, transcript, descriptions, success=False, caption_density=caption_density)
             return "Error: Failed to generate synthesis. Please try again.", None, None
         
         summary_match = re.search(r'<summary>(.*?)</summary>', synthesis_output, re.DOTALL)
         if not summary_match:
             error_collector.add_error("Failed to extract summary from synthesis output", source="process_video_web")
-            save_output(video_path, frame_count, transcript, descriptions, success=False)
+            save_output(video_path, frame_count, transcript, descriptions, success=False, caption_density=caption_density)
             return "Error: Failed to extract summary from synthesis output.", None, None
         
         summary = summary_match.group(1).strip()
@@ -1045,7 +1102,7 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
         total_run_time = time.time() - start_time
 
         # Final save with success flag
-        save_output(video_path, frame_count, transcript, descriptions, summary, total_run_time, synthesis_output, synthesis_captions, use_local_llm=use_local_llm, success=True)
+        save_output(video_path, frame_count, transcript, descriptions, summary, total_run_time, synthesis_output, synthesis_captions, use_local_llm=use_local_llm, success=True, caption_density=caption_density)
 
         gallery_images = []
         video = cv2.VideoCapture(video_path)
@@ -1109,7 +1166,7 @@ def process_video_web(video_file, use_frame_selection=False, use_synthesis_capti
         return output_video_path, f"Video Summary:\n{summary}\n\nTime taken: {total_run_time:.2f} seconds", gallery_images
     except Exception as e:
         error_collector.add_error(e, source="process_video_web")
-        save_output(video_path, frame_count, transcript, descriptions, success=False)
+        save_output(video_path, frame_count, transcript, descriptions, success=False, caption_density=caption_density)
         return "Error: An unexpected error occurred while processing the video.", None, None
 
 def process_folder(folder_path, args):
@@ -1146,7 +1203,8 @@ def process_folder(folder_path, args):
                     use_synthesis_captions=args.synthesis_captions,
                     use_local_llm=args.local,
                     show_transcriptions=args.transcribe,
-                    debug=args.debug
+                    debug=args.debug,
+                    caption_density=args.density
                 )
                 expected_output = os.path.join('outputs', f'captioned_{os.path.splitext(video_file)[0]}_web.mp4')
                 if os.path.exists(expected_output):
@@ -1204,24 +1262,87 @@ def main():
     parser.add_argument('--synthesis-captions', action='store_true', help='Use synthesized narrative captions (recommended)')
     parser.add_argument('--transcribe', action='store_true', help='Show speech transcriptions in the output video')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode to show metadata in summary screen')
+    parser.add_argument('--density', type=float, default=CAPTION_DENSITY['DEFAULT'], 
+                       help=f'Caption density multiplier (between {CAPTION_DENSITY["MIN"]} and {CAPTION_DENSITY["MAX"]}, default: {CAPTION_DENSITY["DEFAULT"]})')
     args = parser.parse_args()
 
     if args.web:
-        iface = gr.Interface(
-            fn=process_video_web,
-            inputs=[
-                gr.File(label="Upload Video"),
-                gr.Checkbox(label="Use Frame Selection", value=True, info="Recommended: Intelligently selects key frames"),
-                gr.Checkbox(label="Use Synthesis Captions", value=True, info="Recommended: Creates a more pleasant viewing experience"), 
-                gr.Checkbox(label="Use Local LLM", value=True, info="Use local Llama model instead of OpenAI API (requires model weights)"),
-                gr.Checkbox(label="Show Transcriptions", value=False, info="Show speech transcriptions in the output video"),
-                gr.Checkbox(label="Debug Mode", value=False, info="Show metadata in summary screen")
-            ],
-            outputs=[gr.Video(label="Captioned Video"), gr.Textbox(label="Summary"), gr.Gallery(label="Analyzed Frames")],
-            title="Video Summarizer",
-            description="Upload a video to get a summary and view analyzed frames.",
-            allow_flagging="never"
-        )
+        with gr.Blocks(title="Video Summarizer") as iface:
+            gr.Markdown("# Video Summarizer")
+            gr.Markdown("Upload a video to get a summary and view analyzed frames.")
+            
+            with gr.Row():
+                with gr.Column():
+                    video_input = gr.File(label="Upload Video")
+                    density_input = gr.Number(
+                        value=CAPTION_DENSITY['DEFAULT'],
+                        label="Caption Density",
+                        info=f"Multiplier for number of captions (between {CAPTION_DENSITY['MIN']} and {CAPTION_DENSITY['MAX']})",
+                        minimum=CAPTION_DENSITY['MIN'],
+                        maximum=CAPTION_DENSITY['MAX'],
+                        step=0.1
+                    )
+                    estimate_text = gr.Textbox(label="Caption Estimate", interactive=False)
+                    
+                    frame_selection = gr.Checkbox(
+                        label="Use Frame Selection",
+                        value=True,
+                        info="Recommended: Intelligently selects key frames"
+                    )
+                    synthesis_captions = gr.Checkbox(
+                        label="Use Synthesis Captions",
+                        value=True,
+                        info="Recommended: Creates a more pleasant viewing experience"
+                    )
+                    use_local_llm = gr.Checkbox(
+                        label="Use Local LLM",
+                        value=True,
+                        info="Use local Llama model instead of OpenAI API (requires model weights)"
+                    )
+                    show_transcriptions = gr.Checkbox(
+                        label="Show Transcriptions",
+                        value=True,
+                        info="Show speech transcriptions in the output video"
+                    )
+                    debug_mode = gr.Checkbox(
+                        label="Debug Mode",
+                        value=False,
+                        info="Show metadata in summary screen"
+                    )
+                    
+                with gr.Column():
+                    video_output = gr.Video(label="Captioned Video")
+                    summary_output = gr.Textbox(label="Summary")
+                    gallery_output = gr.Gallery(label="Analyzed Frames")
+            
+            # Update estimate when video or density changes
+            video_input.change(
+                fn=update_caption_estimate,
+                inputs=[video_input, density_input],
+                outputs=estimate_text
+            )
+            density_input.change(
+                fn=update_caption_estimate,
+                inputs=[video_input, density_input],
+                outputs=estimate_text
+            )
+            
+            # Process video button
+            process_btn = gr.Button("Process Video")
+            process_btn.click(
+                fn=process_video_web,
+                inputs=[
+                    video_input,
+                    frame_selection,
+                    synthesis_captions,
+                    use_local_llm,
+                    show_transcriptions,
+                    debug_mode,
+                    density_input
+                ],
+                outputs=[video_output, summary_output, gallery_output]
+            )
+            
         iface.launch()
     elif args.path:
         start_time = time.time()
@@ -1233,10 +1354,11 @@ def main():
                 output_video_path, summary, gallery_images = process_video_web(
                     type('VideoFile', (), {'name': args.path})(),
                     use_frame_selection=args.frame_selection,
-                    use_synthesis_captions=args.synthesis_captions, 
+                    use_synthesis_captions=args.synthesis_captions,
                     use_local_llm=args.local,
                     show_transcriptions=args.transcribe,
-                    debug=args.debug
+                    debug=args.debug,
+                    caption_density=args.density
                 )
 
 if __name__ == "__main__":

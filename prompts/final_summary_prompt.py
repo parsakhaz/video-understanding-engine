@@ -3,7 +3,7 @@ def get_prompt() -> str:
     The frame and scene summaries, along with transcript segments, are presented in chronological order. This video does not contain photos, any mentions of photos are incorrect and hallucinations.
     
     Output a single overall summary of all the frames, scenes, and dialogue that:
-    1. Always starts with "This video presents" to maintain consistent style.
+    1. Always starts with "The video presents" to maintain consistent style.
     2. Captures the main narrative arc, inferring the most likely high level overview and theme with the given information, along with emotions and feelings.
     3. Maintains a clear and concise flow
     4. Is roughly the same length as one of the input summaries
