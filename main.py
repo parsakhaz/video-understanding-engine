@@ -330,7 +330,7 @@ def get_synthesis_prompt(num_keyframes: int, video_duration: float, metadata_con
     # Apply density multiplier to final caption count
     num_captions = int(num_captions * caption_density)
 
-    metadata_section = f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions, with the following metadata context about the video's origin and purpose:\n\n{metadata_context}\n\nThis metadata might inform your understanding of the video, but don't lean on it too heavily, or mention it explicitly in your output.""" if metadata_context else "You are tasked with summarizing and captioning a video based on its transcript and frame descriptions."
+    metadata_section = f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions, with the following metadata context about the video's origin and purpose:\n\n{metadata_context}\n\nThis metadata (any resembling a title or description especially) might inform your understanding of the video, but don't lean on it too heavily, or mention it explicitly in your output.""" if metadata_context else "You are tasked with summarizing and captioning a video based on its transcript and frame descriptions."
     
     return f"""{metadata_section}
 
