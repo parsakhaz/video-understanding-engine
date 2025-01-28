@@ -330,7 +330,7 @@ def get_synthesis_prompt(num_keyframes: int, video_duration: float, metadata_con
     # Apply density multiplier to final caption count
     num_captions = int(num_captions * caption_density)
 
-    metadata_section = f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions, with the following important context about the video's origin and purpose:\n\n{metadata_context}\n\nThis metadata should inform your understanding of:\n- The video's intended purpose and audience\n- Appropriate style and tone for descriptions\n- Professional vs. amateur context\n- Genre-specific considerations\n""" if metadata_context else "You are tasked with summarizing and captioning a video based on its transcript and frame descriptions."
+    metadata_section = f"""You are tasked with summarizing and captioning a video based on its transcript and frame descriptions, with the following metadata context about the video's origin and purpose:\n\n{metadata_context}\n\nThis metadata might inform your understanding of the video, but don't lean on it too heavily, or mention it explicitly in your output.""" if metadata_context else "You are tasked with summarizing and captioning a video based on its transcript and frame descriptions."
     
     return f"""{metadata_section}
 
@@ -372,13 +372,13 @@ Frame Description Guidelines:
 3. When synthesizing descriptions:
    - Default to neutral terms like "a person", "someone", or "the speaker"
    - Only attribute actions/speech if explicitly clear from transcript
-   - Focus on clearly visible elements rather than interpretations
+   - Focus on clearly visible elements and their narrative significance
    - Use passive voice when action source is ambiguous
    - Cross-reference transcript before assigning names/identities
 4. If frame descriptions conflict or make assumptions:
    - Favor the most conservative interpretation
    - Omit speculative details
-   - Focus on concrete visual elements
+   - Focus on concrete visual elements and their meaning
    - Maintain consistent neutral language
 5. Remember that gaps may exist between frames, so avoid assuming continuity.
 
