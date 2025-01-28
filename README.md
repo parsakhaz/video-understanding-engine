@@ -15,6 +15,7 @@
   - [Core Features](#core-features)
   - [Video Output Features](#video-output-features)
   - [Caption Types](#caption-types)
+  - [Caption Density Control](#caption-density-control)
   - [Accessibility Features](#accessibility-features)
   - [Content Synthesis Options](#content-synthesis-options)
 - [Architecture Overview](#architecture-overview)
@@ -32,6 +33,7 @@
 - [Troubleshooting](#troubleshooting)
 - [Video Output Format](#video-output-format)
 - [Recent Updates](#recent-updates)
+  - [Caption Density Control](#caption-density-control)
   - [Audio Processing Improvements](#audio-processing-improvements)
   - [Caption Enhancements](#caption-enhancements)
   - [Technical Improvements](#technical-improvements)
@@ -107,6 +109,24 @@ python main.py inputs --frame-selection --local --save --synthesis-captions --tr
    - Better for storytelling and overview
    - Clean text without timestamps
 
+### Caption Density Control
+- **NEW: Adjustable Caption Density**
+  - Fine-grained control over caption frequency
+  - Range: 0.25x to 3.0x (default: 1.0x)
+  - Web interface number input for precise control
+  - Command line `--density` parameter
+  - Real-time caption count estimation
+  - Dynamic adjustment based on video length
+  - Automatic clamping to valid range
+  - Affects both synthesis and frame description captions
+
+Example density settings:
+- 0.5x: Half as many captions (more minimal)
+- 1.0x: Default caption frequency
+- 1.5x: 50% more captions
+- 2.0x: Double the captions (more detailed)
+- 3.0x: Triple the captions (maximum detail)
+
 ### Accessibility Features
 - High contrast caption backgrounds (70% opacity)
 - Responsive font sizing
@@ -180,6 +200,12 @@ graph TD
     N --> O
     MG --> O
     
+    subgraph "Caption Density Control"
+    CD[Caption Density Input] --> CDC[Density Calculation]
+    CDC --> CDE[Estimate Caption Count]
+    CDC --> O
+    end
+    
     subgraph "Summarization Pipeline"
     O --> P{Model Selection}
     P -->|Local| Q[Llama 3.1]
@@ -220,10 +246,11 @@ sequenceDiagram
     participant LLM
     participant VideoGen
 
-    User->>Main: process_video_web(video_file)
+    User->>Main: process_video_web(video_file, caption_density)
     activate Main
     
     Main->>Main: Check audio stream
+    Main->>Main: Calculate target captions with density
     
     par Frame Analysis
         Main->>FrameSelection: process_video(video_path)
@@ -256,18 +283,18 @@ sequenceDiagram
     Moondream-->>Main: frame_descriptions
     deactivate Moondream
 
-    Main->>LLM: summarize_with_hosted_llm(transcript, descriptions)
+    Main->>LLM: summarize_with_hosted_llm(transcript, descriptions, caption_density)
     activate LLM
-    Note over LLM: Generate summary<br/>Create synthesis captions<br/>Validate XML format<br/>Use earliest timestamps
+    Note over LLM: Generate summary<br/>Create synthesis captions<br/>Apply density multiplier<br/>Validate XML format<br/>Use earliest timestamps
     LLM-->>Main: synthesis_output
     deactivate LLM
 
     Main->>Main: parse_synthesis_output()
-    Note over Main: Extract summary<br/>Parse captions<br/>Validate format
+    Note over Main: Extract summary<br/>Parse captions<br/>Validate format<br/>Check caption count matches density
 
     Main->>VideoGen: create_captioned_video()
     activate VideoGen
-    Note over VideoGen: Create summary intro (5s)<br/>Process main video<br/>Add overlays<br/>Handle captions
+    Note over VideoGen: Create summary intro (5s)<br/>Process main video<br/>Add overlays<br/>Handle captions<br/>Apply density settings
     VideoGen->>VideoGen: Filter close captions
     Note over VideoGen: min_time_gap=1.2s<br/>Adjust timing -0.5s
     VideoGen->>VideoGen: Create background layer
@@ -513,7 +540,7 @@ python main.py <video_path>
 
 Advanced options:
 ```bash
-python main.py <video_path> [--save] [--local] [--frame-selection] [--web] [--synthesis-captions] [--transcribe] [--debug]
+python main.py <video_path> [--save] [--local] [--frame-selection] [--web] [--synthesis-captions] [--transcribe] [--debug] [--density DENSITY]
 ```
 
 Options explained:
@@ -524,29 +551,30 @@ Options explained:
 - `--synthesis-captions`: Use synthesized narrative captions (recommended for better viewing experience)
 - `--transcribe`: Show speech transcriptions in the output video (optional, transcripts are still generated for captions)
 - `--debug`: Enable debug mode with additional metadata overlay and detailed logging
+- `--density`: Caption density multiplier (between 0.25 and 3.0, default: 1.0)
 
 Example commands:
 ```bash
 # Launch web interface (recommended for single video processing, easy to use)
 python main.py --web
 
-# Process single video with all features including debug mode
-python main.py video.mp4 --frame-selection --local --save --synthesis-captions --transcribe --debug
+# Process single video with all features including debug mode and 2x caption density
+python main.py video.mp4 --frame-selection --local --save --synthesis-captions --transcribe --debug --density 2.0
 
-# Process video with debug mode for troubleshooting
-python main.py video.mp4 --debug
+# Process video with fewer captions (0.5x density)
+python main.py video.mp4 --frame-selection --synthesis-captions --density 0.5
 
-# Process video with captions but without visible transcriptions
-python main.py video.mp4 --frame-selection --synthesis-captions
+# Process video with more detailed captions (1.5x density)
+python main.py video.mp4 --frame-selection --synthesis-captions --density 1.5
 
-# Process all videos in a folder with transcriptions
-python main.py /path/to/folder --frame-selection --transcribe
+# Process all videos in a folder with transcriptions and custom density
+python main.py /path/to/folder --frame-selection --transcribe --density 1.3
 
-# Process 'inputs' folder with all features
-python main.py inputs --frame-selection --local --save --synthesis-captions --transcribe --debug
+# Process 'inputs' folder with all features and maximum caption density
+python main.py inputs --frame-selection --local --save --synthesis-captions --transcribe --debug --density 3.0
 
 # Quick processing with hosted LLM and synthesis captions
-python main.py video.mp4 --save --synthesis-captions
+python main.py video.mp4 --save --synthesis-captions --density 1.0
 ```
 
 **Folder Processing Features:**
@@ -639,6 +667,14 @@ When using `--save` or `--debug`, outputs are saved in `logs/` with the followin
                 "text": "Caption text..."
             }
         ]
+    },
+    "caption_analysis": {
+        "video_type": "Short/Medium/Long",
+        "density_multiplier": 1.0,
+        "target_captions": 25,
+        "captions_per_second": 0.21,
+        "calculation_formula": "calculation_formula_string",
+        "actual_captions_generated": 25
     }
 }
 ```
@@ -705,87 +741,31 @@ Plot interpretation:
 
 ## Recent Updates
 
-### Debug Mode Addition
-- New `--debug` flag for enhanced troubleshooting
-- Comprehensive metadata overlay
-- Real-time processing information
-- Visual debug indicators
-- Improved error tracking
-
-### Audio Processing Improvements
-- Enhanced timing and synchronization:
-  - Predictive caption timing with 0.5s early display
-  - Smart timestamp selection using earliest scene detection
-  - Minimum 1.2s gap between captions
-  - Automatic audio stream detection
-- **NEW: Simplified Audio Pipeline**
-  - Removed all audio manipulation logic for better reliability
-  - Direct MP3 extraction from video
-  - Raw MP3 passed to Whisper model
-  - Cleaner transcription results
-  - Reduced complexity and potential failure points
-  - Better handling of audio streams
-
-### Synthesis Improvements
-- **NEW: Enhanced Retry Logic**
-  - Increased retry attempts from 3 to 5 for all synthesis operations
-  - Better exponential backoff timing
-  - Improved error handling and recovery
-  - Separate retries for:
-    - Chunk synthesis
-    - Final summary generation
-    - Short video synthesis
-    - API calls
-  - More reliable caption generation
-  - Better handling of synthesis failures
-
-### Technical Improvements
-- **NEW: Better Summary Extraction**
-  - Improved parsing of synthesis output
-  - Proper extraction of summary from XML format
-  - Cleaner logging of summaries
-  - Fixed summary display in web interface
-  - Better error messages for synthesis failures
-  - Proper validation of output format
-
-## Advanced Features & Limitations
-
-### Hallucination Detection Parameters
-- Detection threshold: 0.08 words/second
-- Minimum skip: 10 frames
-- Number of clusters: 15
-
-### Transcript Cleaning System
-- Automatic removal of non-speech segments
-- Post-processing for better transcription quality
-
-### Caption Timing Specifications
-- Predictive caption timing: 0.5s early display
-- Minimum 1.2s gap between captions
-
-### Error Recovery System
-- Fallback to frame descriptions if synthesis fails
-- Smart handling of caption timing edge cases
-
-### Resolution-based Adaptations
-- Adaptive font scaling based on video resolution
-
-### Video Processing Limitations
-- Maximum recommended video length: 6-8 minutes
-- Automatic audio stream detection
+### Caption Density Control
+- **NEW: Adjustable Caption Density**
+  - Fine-grained control over caption frequency (0.25x to 3.0x)
+  - Web interface number input for precise control
+  - Command line `--density` parameter
+  - Real-time caption count estimation
+  - Dynamic adjustment based on video length
+  - Automatic clamping to valid range
+  - Debug metadata includes density calculations
+  - Improved caption timing with density consideration
 
 ### Debug Mode Features
 - Detailed metadata overlay in video output:
   - Video Info: Duration, Resolution, FPS, Size
-  - Caption Info: Video Type, Target Captions, Captions/Second, Calculation
-- Enhanced logging of processing steps
-- Visual indicators in debug mode:
-  - "DEBUG" prefix in attribution text
-  - Metadata overlay in top-left corner
-- Automatic metadata extraction and display
-- Real-time calculation visualization
-- Helps with:
-  - Troubleshooting caption timing
-  - Verifying video properties
-  - Understanding caption calculations
-  - Monitoring processing flow
+  - Caption Info: Video Type, Density Multiplier, Target Captions, Captions/Second, Calculation
+  - Enhanced logging of processing steps
+  - Visual indicators in debug mode:
+    - "DEBUG" prefix in attribution text
+    - Metadata overlay in top-left corner
+  - Automatic metadata extraction and display
+  - Real-time calculation visualization
+  - Caption density calculation details
+  - Helps with:
+    - Troubleshooting caption timing
+    - Verifying video properties
+    - Understanding caption calculations
+    - Monitoring processing flow
+    - Validating density settings

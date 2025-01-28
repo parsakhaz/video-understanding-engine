@@ -782,10 +782,13 @@ def create_captioned_video(video_path: str, descriptions: list, summary: str, tr
                 return None
 
             if use_synthesis_captions and synthesis_captions:
-                adjusted_captions = [(max(0.0, timestamp - CAPTION['TIMESTAMP_OFFSET']), text) for timestamp, text in synthesis_captions]
+                # Filter out captions containing "the same"
+                filtered_captions = [(timestamp, text) for timestamp, text in synthesis_captions if "the same" not in text.lower()]
+                adjusted_captions = [(max(0.0, timestamp - CAPTION['TIMESTAMP_OFFSET']), text) for timestamp, text in filtered_captions]
                 frame_info = [(int(timestamp * fps), timestamp, text) for timestamp, text in adjusted_captions]
             else:
-                frame_info = [(frame_num, timestamp, desc) for frame_num, timestamp, desc in descriptions]
+                # Filter out descriptions containing "the same"
+                frame_info = [(frame_num, timestamp, desc) for frame_num, timestamp, desc in descriptions if "the same" not in desc.lower()]
             
             frame_info.sort(key=lambda x: x[1])
 
